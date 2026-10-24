@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "ALREADY_EXISTS",
+    "message": "原路径已被占用，未执行恢复",
+    "request_id": "3d5b0e4c-9f6a-4b1c-d8e7-0a9b8c7d6e5f",
+    "details": {
+      "occupied_path": "agents/old_script.py",
+      "suggested_path": "agents/old_script (1).py"
+    }
+  }
+}

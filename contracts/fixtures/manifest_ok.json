@@ -1,0 +1,38 @@
+{
+  "project_id": "e1a7c9f0-3b2d-4e5f-8a6b-7c8d9e0f1a2b",
+  "revision": 12,
+  "generated_at": "2026-10-24T12:00:00Z",
+  "truncated": false,
+  "root": {
+    "type": "dir",
+    "name": "",
+    "path": "",
+    "children": [
+      {
+        "type": "dir",
+        "name": "agents",
+        "path": "agents",
+        "children": [
+          {
+            "type": "file",
+            "name": "react_agent.py",
+            "path": "agents/react_agent.py",
+            "size": 15,
+            "mtime": "2026-10-24T11:58:30Z",
+            "version": "sha256:03e693d9f2f687e0f40e36a8df7fcb4d1c22974012b7c2a55c000eb30f305824",
+            "read_only": false
+          }
+        ]
+      },
+      {
+        "type": "file",
+        "name": "README.md",
+        "path": "README.md",
+        "size": 512,
+        "mtime": "2026-10-24T10:00:00Z",
+        "version": "sha256:3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8e7",
+        "read_only": false
+      }
+    ]
+  }
+}

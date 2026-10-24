@@ -1,0 +1,23 @@
+{
+  "description": "合同 fixtures 索引：每个条目把一个 JSON 示例绑定到 openapi.yaml 中的 Schema。由 integration-tests/contract/check_contracts.py 机器校验。",
+  "entries": [
+    { "id": "health_ok", "file": "health_ok.json", "schema": "#/components/schemas/HealthResponse", "kind": "response" },
+    { "id": "pair_complete_request", "file": "pair_complete_request.json", "schema": "#/components/schemas/PairCompleteRequest", "kind": "request" },
+    { "id": "pair_complete_response", "file": "pair_complete_response.json", "schema": "#/components/schemas/PairCompleteResponse", "kind": "response" },
+    { "id": "pair_rejected", "file": "pair_rejected.json", "schema": "#/components/schemas/ErrorResponse", "kind": "response" },
+    { "id": "projects_ok", "file": "projects_ok.json", "schema": "#/components/schemas/ProjectListResponse", "kind": "response" },
+    { "id": "manifest_ok", "file": "manifest_ok.json", "schema": "#/components/schemas/ManifestResponse", "kind": "response" },
+    { "id": "file_read_ok", "file": "file_read_ok.json", "schema": "#/components/schemas/FileContentResponse", "kind": "response" },
+    { "id": "file_read_binary_415", "file": "file_read_binary_415.json", "schema": "#/components/schemas/ErrorResponse", "kind": "response" },
+    { "id": "file_save_request", "file": "file_save_request.json", "schema": "#/components/schemas/FileSaveRequest", "kind": "request" },
+    { "id": "file_save_ok", "file": "file_save_ok.json", "schema": "#/components/schemas/FileSaveResponse", "kind": "response" },
+    { "id": "file_save_conflict_409", "file": "file_save_conflict_409.json", "schema": "#/components/schemas/ErrorResponse", "kind": "response" },
+    { "id": "file_create_request", "file": "file_create_request.json", "schema": "#/components/schemas/FileCreateRequest", "kind": "request" },
+    { "id": "file_create_ok", "file": "file_create_ok.json", "schema": "#/components/schemas/FileCreateResponse", "kind": "response" },
+    { "id": "trash_request", "file": "trash_request.json", "schema": "#/components/schemas/TrashRequest", "kind": "request" },
+    { "id": "trash_ok", "file": "trash_ok.json", "schema": "#/components/schemas/TrashResponse", "kind": "response" },
+    { "id": "trash_restore_ok", "file": "trash_restore_ok.json", "schema": "#/components/schemas/RestoreResponse", "kind": "response" },
+    { "id": "trash_restore_conflict_409", "file": "trash_restore_conflict_409.json", "schema": "#/components/schemas/ErrorResponse", "kind": "response" },
+    { "id": "error_unauthorized_401", "file": "error_unauthorized_401.json", "schema": "#/components/schemas/ErrorResponse", "kind": "response" }
+  ]
+}

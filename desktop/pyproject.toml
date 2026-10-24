@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pocketcode-desktop"
+version = "0.1.0"
+description = "PocketCode Windows 桌面端：PySide6 管理窗口 + 局域网文件服务（FastAPI）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+    "PySide6>=6.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "httpx>=0.27",
+    "openapi-spec-validator>=0.7",
+    "jsonschema>=4.21",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+pocketcode = "pocketcode.main:run"
+
+[tool.setuptools]
+packages = [
+    "pocketcode",
+    "pocketcode.gui",
+    "pocketcode.server",
+    "pocketcode.server.routes",
+    "pocketcode.services",
+    "pocketcode.storage",
+    "pocketcode.discovery",
+    "pocketcode.security",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

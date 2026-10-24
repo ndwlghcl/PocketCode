@@ -1,0 +1,169 @@
+/* PocketCode S0 基础主题：手机优先、深浅色自适应（PRD §11）。 */
+
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --text: #1c1e21;
+  --text-dim: #65676b;
+  --accent: #2d7dff;
+  --border: #e4e6eb;
+  --offline: #d97706;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121417;
+    --card: #1d2024;
+    --text: #e4e6eb;
+    --text-dim: #9aa0a6;
+    --border: #2c3036;
+    --offline: #f59e0b;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans SC", "Microsoft YaHei",
+    sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+
+.statusbar__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.statusbar__dot--offline {
+  background: var(--offline);
+}
+
+.screen {
+  flex: 1;
+  padding: 16px;
+  max-width: 640px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.screen__title {
+  font-size: 22px;
+  margin: 4px 0 16px;
+}
+
+.empty {
+  color: var(--text-dim);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  line-height: 1.6;
+}
+
+.hint {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin-top: 12px;
+}
+
+.cardlist,
+.filelist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cardlist__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  font-size: 16px;
+  color: var(--text);
+  text-align: left;
+}
+
+.cardlist__meta {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.navrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.navrow__back {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 16px;
+  padding: 6px 4px;
+}
+
+.navrow__title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.filelist__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 12px;
+  margin-bottom: 6px;
+  font-size: 15px;
+  color: var(--text);
+  text-align: left;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+button:active {
+  opacity: 0.7;
+}

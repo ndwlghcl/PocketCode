@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "UNSUPPORTED_FORMAT",
+    "message": "该文件是二进制格式，无法以文本方式打开",
+    "request_id": "1b3f8c2a-7d4e-4f9a-b6c5-8e7d6f5a4b3c",
+    "details": {
+      "path": "assets/logo.png",
+      "detected": "image/png"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "projects": [
+    {
+      "id": "e1a7c9f0-3b2d-4e5f-8a6b-7c8d9e0f1a2b",
+      "name": "agents-demo",
+      "revision": 12
+    },
+    {
+      "id": "f2b8d0a1-4c3e-4f6a-9b7c-8d9e0f1a2b3c",
+      "name": "pocketcode-docs",
+      "revision": 3
+    }
+  ]
+}

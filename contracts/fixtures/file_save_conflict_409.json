@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "VERSION_CONFLICT",
+    "message": "电脑文件已在别处修改",
+    "request_id": "2c4a9d3b-8e5f-4a0b-c7d6-9f8e7a6b5c4d",
+    "details": {
+      "base_version": "sha256:03e693d9f2f687e0f40e36a8df7fcb4d1c22974012b7c2a55c000eb30f305824",
+      "current_version": "sha256:3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8e7"
+    }
+  }
+}

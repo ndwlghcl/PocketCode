@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "缺少有效的设备凭据",
+    "request_id": "4e6c1f5d-0a7b-4c2d-e9f8-1b0a9b8c7d6e"
+  }
+}

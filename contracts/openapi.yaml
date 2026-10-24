@@ -1,0 +1,922 @@
+# PocketCode Server API 合同 v1（S0 冻结）
+#
+# 本文件是接口唯一真源（single source of truth）：
+#   - 后端（desktop/pocketcode/server）不得返回本文件之外的字段或错误码；
+#   - 移动端（mobile/src/api）类型与本文件对齐，后续由代码生成；
+#   - 修改本文件必须同步更新 contracts/fixtures、errors.md、两端实现与测试。
+#
+# 语义依据：《PocketCode 技术架构设计 v0.1》第 4 节；S0 只要求实现 /v1/health，
+# 其余端点在本阶段仅冻结语义，不要求实现。
+openapi: 3.1.0
+info:
+  title: PocketCode Server API
+  version: "1.0.0-s0"
+  description: |
+    PocketCode 局域网接口合同 v1（S0 冻结语义，精确 Schema 以本文件为准）。
+
+    ## 全局约定
+    - 所有路径统一前缀 `/v1`；请求与响应均为 UTF-8 JSON。
+    - 时间一律 ISO 8601 UTC（以 `Z` 结尾），例如 `2026-10-24T12:00:00Z`。
+    - 所有 ID（project_id、device_id、trash_id、request_id）均为服务端生成的 UUID。
+    - 除 `/v1/health` 与 `/v1/pair/complete` 外，所有端点必须携带
+      `Authorization: Bearer <device_token>`（配对时颁发，可在电脑端撤销）。
+    - 每个响应都带 `X-Request-Id` 头；失败响应体中的 `error.request_id` 与之一致。
+    - 失败一律返回统一错误包裹 `{"error": {...}}`，HTTP 状态码必须恰当，
+      详见 `contracts/errors.md`。
+    - 服务端可能返回的错误码枚举见 `components.schemas.ErrorBody.properties.code`；
+      客户端本地生成的 `OFFLINE` 不是服务端错误码。
+
+    ## 文件版本与目录快照
+    - `version`（文件版本）= `sha256:<64 位小写十六进制>`，对该文件当前原始字节计算；
+      任何字节变化都会产生不同值，可用于保存冲突检测（`base_version`）。
+    - `revision`（目录快照序号）是项目 manifest 的服务器递增序号，
+      与单个文件的 `version` 无关。
+
+    ## 大小限制（服务端默认值，可在桌面端调小，不可超过）
+    - 单文件读取/写入：4 MiB（4,194,343 字节以内；超出返回 413 `FILE_TOO_LARGE`）
+    - 请求体总大小：8 MiB
+    - manifest 条目数：100,000；超出时返回 `truncated: true`
+    - 一次回收（trash）批量路径数：100
+
+    ## 相对路径规则
+    文件定位一律使用 `project_id + 相对路径`，客户端不得提交电脑绝对路径。
+    规则详见 `RelativePath` 的 description。
+
+servers:
+  - url: /v1
+    description: 局域网直连（电脑显示的实际地址，例如 http://192.168.43.10:8765/v1）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/health:
+    get:
+      operationId: getHealth
+      summary: 最小健康状态（无敏感信息，无需认证）
+      description: |
+        仅返回服务存活状态与协议版本；不返回项目名、电脑用户名、路径或版本详情。
+        用于 S1 连通性诊断与客户端探活。
+      security: []
+      tags: [health]
+      responses:
+        "200":
+          description: 服务正常（或降级但可达）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+
+  /v1/pair/complete:
+    post:
+      operationId: completePairing
+      summary: 消耗一次性配对票据并颁发设备凭据
+      description: |
+        手机扫描电脑显示的配对二维码后调用。请求中的一次性 `pairing_code`
+        来自二维码；电脑桌面端会弹出确认框，用户确认后才颁发凭据。
+        `device_token` 仅在本次响应中出现一次，手机必须安全存储；
+        之后所有业务请求以 `Authorization: Bearer <device_token>` 携带。
+        电脑端可随时撤销该 token（撤销后返回 401 `DEVICE_REVOKED`）。
+      security: []
+      tags: [pairing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PairCompleteRequest'
+      responses:
+        "200":
+          description: 配对成功，返回设备专属凭据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairCompleteResponse'
+        "400":
+          $ref: '#/components/responses/InvalidRequest'
+        "401":
+          description: 配对码无效或已过期
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid:
+                  value:
+                    error:
+                      code: PAIRING_CODE_INVALID
+                      message: 配对码无效或已过期
+                      request_id: c9bf9e57-1685-4c89-bafb-ff5af830be8a
+        "403":
+          description: 电脑用户拒绝了本次配对
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "408":
+          description: 等待电脑用户确认超时
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: 配对码已被使用（一次性票据不可重复消费）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/projects:
+    get:
+      operationId: listProjects
+      summary: 返回全部已授权项目
+      description: 配对设备可访问该电脑当前及以后新增的全部授权项目。
+      tags: [projects]
+      responses:
+        "200":
+          description: 项目列表（可能为空）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/projects/{project_id}/manifest:
+    get:
+      operationId: getProjectManifest
+      summary: 返回项目完整目录元数据快照
+      description: |
+        首版为全量快照（`revision` 递增、`generated_at` 为生成时间），
+        后续版本可支持增量。目录树已按服务端策略过滤（依赖目录、构建产物、
+        密钥等不出现）；条目超出上限时 `truncated` 为 true。
+        客户端展示顺序（文件夹在前、文件在后、各组按名称排序）由客户端负责。
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        "200":
+          description: 目录快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManifestResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/ProjectNotFound'
+
+  /v1/projects/{project_id}/file:
+    get:
+      operationId: readFile
+      summary: 读取一个文本文件的内容与元数据
+      description: |
+        仅支持可安全解码为文本的文件；二进制或无法识别编码的文件返回
+        415 `UNSUPPORTED_FORMAT`，绝不返回乱码或损坏内容。
+        `newline` 记录文件原始换行风格，客户端保存时必须保留；
+        返回的 `content` 是解码后的文本，不含 BOM（BOM 体现在
+        `encoding: utf-8-bom`），保存时由服务端按 `encoding` 重新生成。
+      tags: [files]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: path
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/RelativePath'
+      responses:
+        "200":
+          description: 文件内容
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileContentResponse'
+        "400":
+          $ref: '#/components/responses/PathInvalid'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/PathForbidden'
+        "404":
+          description: 项目或文件不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          $ref: '#/components/responses/FileTooLarge'
+        "415":
+          $ref: '#/components/responses/UnsupportedFormat'
+    put:
+      operationId: saveFile
+      summary: 保存文件（带版本冲突检测）
+      description: |
+        仅当 `base_version` 仍等于电脑上该文件的当前 `version` 时写入；
+        否则返回 409 `VERSION_CONFLICT` 并附 `current_version`，
+        不做任何覆盖。写入前服务端会创建可恢复快照（S3 起提供回收区/快照查询）。
+        服务端按 `encoding` 与 `newline` 重新编码并保留原始换行风格。
+      tags: [files]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileSaveRequest'
+      responses:
+        "200":
+          description: 保存成功，返回新版本
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileSaveResponse'
+        "400":
+          $ref: '#/components/responses/PathInvalid'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/PathForbidden'
+        "404":
+          description: 项目或文件不存在（保存期间被删除也返回 404）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: 电脑文件已被其他端修改（例如 PyCharm）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                conflict:
+                  value:
+                    error:
+                      code: VERSION_CONFLICT
+                      message: 电脑文件已在别处修改
+                      request_id: c9bf9e57-1685-4c89-bafb-ff5af830be8a
+                      details:
+                        current_version: sha256:3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8e7
+        "413":
+          $ref: '#/components/responses/FileTooLarge'
+        "415":
+          $ref: '#/components/responses/UnsupportedFormat'
+
+  /v1/projects/{project_id}/files:
+    post:
+      operationId: createEntry
+      summary: 新建文件或目录
+      description: |
+        自动创建缺失的父目录（等价 mkdir -p）。目标已存在时返回
+        409 `ALREADY_EXISTS`，不覆盖。`type: dir` 时忽略 `content`。
+      tags: [files]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileCreateRequest'
+      responses:
+        "201":
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileCreateResponse'
+        "400":
+          $ref: '#/components/responses/PathInvalid'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/PathForbidden'
+        "409":
+          $ref: '#/components/responses/AlreadyExists'
+
+  /v1/projects/{project_id}/trash:
+    post:
+      operationId: trashEntries
+      summary: 把文件/目录移入 PocketCode 专用回收区
+      description: |
+        批量删除是原子操作：任一路径不存在则整批失败（404），
+        不产生部分删除。返回每项的 `trash_id`，可用于跨会话恢复。
+        回收区内容不计入项目 manifest。
+      tags: [trash]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrashRequest'
+      responses:
+        "200":
+          description: 全部移入回收区
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrashResponse'
+        "400":
+          $ref: '#/components/responses/PathInvalid'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/PathForbidden'
+        "404":
+          description: 项目不存在，或批次中某路径不存在（details.path 指明）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/trash:
+    get:
+      operationId: listTrash
+      summary: 列出回收区条目（跨会话持久）
+      tags: [trash]
+      responses:
+        "200":
+          description: 回收区条目列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrashListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      operationId: purgeTrash
+      summary: 清空回收区（不可恢复；桌面端 UI 需单独确认）
+      tags: [trash]
+      responses:
+        "204":
+          description: 已清空
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/trash/{trash_id}:
+    delete:
+      operationId: deleteTrashEntry
+      summary: 永久删除单条回收区条目（不可恢复）
+      tags: [trash]
+      parameters:
+        - name: trash_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: 已删除
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /v1/trash/{trash_id}/restore:
+    post:
+      operationId: restoreTrashEntry
+      summary: 从回收区恢复
+      description: |
+        恢复到原路径；原路径已被占用时不覆盖，返回 409 `ALREADY_EXISTS`，
+        `details.suggested_path` 给出不冲突的建议路径供客户端选择。
+      tags: [trash]
+      parameters:
+        - name: trash_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 恢复成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/AlreadyExists'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 配对时颁发的设备 token（不透明字符串），可在电脑端撤销。
+
+  headers:
+    XRequestId:
+      description: 服务端为本请求生成的 UUID，用于日志关联与问题排查。
+      schema:
+        type: string
+        format: uuid
+
+  parameters:
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: 授权项目的稳定逻辑 ID；客户端不接触电脑绝对路径。
+
+  responses:
+    Unauthorized:
+      description: 缺少凭据、凭据无效或设备已被撤销（见 error.code）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InvalidRequest:
+      description: 请求体缺失、JSON 非法或字段不符合 Schema
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PathInvalid:
+      description: 相对路径不符合规则（400 INVALID_REQUEST）或越出授权根目录（403 PATH_FORBIDDEN）已在其他响应声明；本响应为路径语法错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PathForbidden:
+      description: 路径越出授权项目根目录（含符号链接/junction 绕过）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ProjectNotFound:
+      description: project_id 不存在或未授权
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: 资源不存在（如 trash_id 无效）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    AlreadyExists:
+      description: 目标已存在，未做任何覆盖
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    FileTooLarge:
+      description: 文件超过大小上限（默认 4 MiB）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnsupportedFormat:
+      description: 二进制或无法安全解码的编码，拒绝读取/写入
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status, protocol_version, service]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          description: ok=服务正常；degraded=服务可达但部分能力受限（首版不会出现）。
+        protocol_version:
+          type: string
+          description: 接口合同版本。
+          example: "1.0"
+        service:
+          type: string
+          description: 固定为 pocketcode，供客户端识别。
+          example: pocketcode
+
+    PairCompleteRequest:
+      type: object
+      additionalProperties: false
+      required: [pairing_code, device_name, device_platform]
+      properties:
+        pairing_code:
+          type: string
+          minLength: 6
+          maxLength: 32
+          pattern: '^[A-Z0-9-]+$'
+          description: 电脑端二维码中的一次性配对码，只能使用一次。
+          example: ABCD-2345
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 手机显示名，供电脑端确认与设备列表展示。
+          example: Pixel 手机
+        device_platform:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: 客户端平台标识（android / web 等）。
+          example: android
+
+    PairCompleteResponse:
+      type: object
+      additionalProperties: false
+      required: [device_id, device_token, server_id, server_name]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        device_token:
+          type: string
+          minLength: 20
+          maxLength: 128
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: 设备专属凭据，仅此一次返回；客户端必须安全存储，不得写入日志。
+          example: hQKx9m2pR7vN3jW8sY5cZ1eF4gH6bD0aX9uT2rQ8mKw
+        server_id:
+          type: string
+          format: uuid
+          description: 安装实例唯一 ID，自动发现时用于校验身份。
+        server_name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: 书房电脑
+
+    ProjectSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name, revision]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: 展示名（默认为根目录文件夹名）。
+        revision:
+          type: integer
+          minimum: 0
+          description: 该项目当前 manifest 快照序号。
+
+    ProjectListResponse:
+      type: object
+      additionalProperties: false
+      required: [projects]
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSummary'
+
+    RelativePath:
+      type: string
+      minLength: 1
+      maxLength: 512
+      pattern: '^(?!/)[^\\]{1,512}$'
+      description: |
+        项目内相对路径。规则（服务端强制校验，违反返回 400 `INVALID_REQUEST`
+        或 403 `PATH_FORBIDDEN`）：
+        - 以 `/` 分隔；URL 查询参数中按 RFC 3986 百分号编码；
+        - 不以 `/` 开头或结尾，不含空段、`.`、`..` 段；
+        - 不含反斜杠 `\`、NUL 或控制字符；
+        - 不使用 Windows 保留设备名（CON、PRN、AUX、NUL、COM1-9、LPT1-9）作为段名；
+        - 总长 ≤ 512 字符，单段 ≤ 255 字符。
+      example: agents/react_agent.py
+
+    Sha256Version:
+      type: string
+      pattern: '^sha256:[0-9a-f]{64}$'
+      description: 文件原始字节的 SHA-256，`sha256:` 前缀 + 64 位小写十六进制。
+      example: sha256:03e693d9f2f687e0f40e36a8df7fcb4d1c22974012b7c2a55c000eb30f305824
+
+    TextEncoding:
+      type: string
+      enum: [utf-8, utf-8-bom, utf-16-le, utf-16-be]
+      description: |
+        服务端可安全回写的编码集合。其他编码（含带 BOM 的 UTF-16 之外的变体）
+        一律 415 `UNSUPPORTED_FORMAT`。utf-8-bom 表示文件带 EF BB BF 前缀。
+
+    NewlineStyle:
+      type: string
+      enum: [LF, CRLF, CR]
+      description: 文件原始换行风格；保存时按此值恢复，不做转换。
+
+    ManifestDir:
+      type: object
+      additionalProperties: false
+      required: [type, name, path, children]
+      properties:
+        type:
+          type: string
+          const: dir
+        name:
+          type: string
+          description: 目录名；仅根目录为空字符串。
+        path:
+          type: string
+          description: 相对路径；仅根目录为空字符串。
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/ManifestNode'
+          description: 子节点；服务器不过滤保证顺序，客户端按“文件夹前、文件后、名称排序”展示。
+
+    ManifestFile:
+      type: object
+      additionalProperties: false
+      required: [type, name, path, size, mtime, version, read_only]
+      properties:
+        type:
+          type: string
+          const: file
+        name:
+          type: string
+          minLength: 1
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        size:
+          type: integer
+          minimum: 0
+          description: 字节数。
+        mtime:
+          type: string
+          format: date-time
+          description: 最后修改时间（ISO 8601 UTC）。
+        version:
+          $ref: '#/components/schemas/Sha256Version'
+        read_only:
+          type: boolean
+          description: true 表示服务端拒绝写入（权限或格式原因）。
+
+    ManifestNode:
+      oneOf:
+        - $ref: '#/components/schemas/ManifestDir'
+        - $ref: '#/components/schemas/ManifestFile'
+      discriminator:
+        propertyName: type
+
+    ManifestResponse:
+      type: object
+      additionalProperties: false
+      required: [project_id, revision, generated_at, truncated, root]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+          minimum: 0
+        generated_at:
+          type: string
+          format: date-time
+        truncated:
+          type: boolean
+          description: 条目数超过上限时为 true，快照不完整。
+        root:
+          $ref: '#/components/schemas/ManifestDir'
+
+    FileContentResponse:
+      type: object
+      additionalProperties: false
+      required: [project_id, path, content, encoding, newline, version, size, mtime, read_only]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        content:
+          type: string
+          description: 解码后的文本内容（不含 BOM）。
+        encoding:
+          $ref: '#/components/schemas/TextEncoding'
+        newline:
+          $ref: '#/components/schemas/NewlineStyle'
+        version:
+          $ref: '#/components/schemas/Sha256Version'
+        size:
+          type: integer
+          minimum: 0
+          description: 原始字节数（与 content 的字符数不同）。
+        mtime:
+          type: string
+          format: date-time
+        read_only:
+          type: boolean
+
+    FileSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [path, base_version, content, encoding, newline]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        base_version:
+          $ref: '#/components/schemas/Sha256Version'
+        content:
+          type: string
+          maxLength: 4194304
+          description: 全量文本内容（非增量、非 base64）。
+        encoding:
+          $ref: '#/components/schemas/TextEncoding'
+        newline:
+          $ref: '#/components/schemas/NewlineStyle'
+
+    FileSaveResponse:
+      type: object
+      additionalProperties: false
+      required: [path, version, size, mtime]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        version:
+          $ref: '#/components/schemas/Sha256Version'
+        size:
+          type: integer
+          minimum: 0
+        mtime:
+          type: string
+          format: date-time
+
+    FileCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [path, type]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        type:
+          type: string
+          enum: [file, dir]
+        content:
+          type: string
+          maxLength: 4194304
+          description: 仅 type=file 且需要初始内容时提供，默认空字符串。
+        encoding:
+          $ref: '#/components/schemas/TextEncoding'
+        newline:
+          $ref: '#/components/schemas/NewlineStyle'
+
+    FileCreateResponse:
+      type: object
+      additionalProperties: false
+      required: [path, type, manifest_revision]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        type:
+          type: string
+          enum: [file, dir]
+        version:
+          $ref: '#/components/schemas/Sha256Version'
+          description: 仅 type=file 时返回。
+        manifest_revision:
+          type: integer
+          minimum: 0
+          description: 创建后的新目录快照序号。
+
+    TrashRequest:
+      type: object
+      additionalProperties: false
+      required: [paths]
+      properties:
+        paths:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/RelativePath'
+
+    TrashItem:
+      type: object
+      additionalProperties: false
+      required: [path, trash_id]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        trash_id:
+          type: string
+          format: uuid
+
+    TrashResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrashItem'
+
+    TrashEntry:
+      type: object
+      additionalProperties: false
+      required: [trash_id, project_id, original_path, deleted_at, kind]
+      properties:
+        trash_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        original_path:
+          $ref: '#/components/schemas/RelativePath'
+        deleted_at:
+          type: string
+          format: date-time
+        kind:
+          type: string
+          enum: [file, dir]
+        size:
+          type: integer
+          minimum: 0
+          description: 仅 file 提供。
+
+    TrashListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrashEntry'
+
+    RestoreResponse:
+      type: object
+      additionalProperties: false
+      required: [trash_id, restored_path]
+      properties:
+        trash_id:
+          type: string
+          format: uuid
+        restored_path:
+          $ref: '#/components/schemas/RelativePath'
+
+    ErrorCode:
+      type: string
+      description: |
+        服务端错误码全集（`OFFLINE` 仅由客户端本地生成，不在其中）。
+        语义与 HTTP 状态对应关系见 contracts/errors.md。
+      enum:
+        - UNAUTHORIZED            # 401 缺少/无效凭据
+        - DEVICE_REVOKED          # 401 设备已被电脑端撤销
+        - PAIRING_CODE_INVALID    # 401 配对码无效或过期
+        - PAIRING_CODE_USED       # 409 配对码已被使用
+        - PAIRING_REJECTED        # 403 电脑用户拒绝配对
+        - PAIRING_TIMEOUT         # 408 等待电脑用户确认超时
+        - INVALID_REQUEST         # 400 请求体/参数不符合合同
+        - NOT_FOUND               # 404 资源（路由/trash_id 等）不存在
+        - METHOD_NOT_ALLOWED      # 405 方法不支持
+        - PROJECT_NOT_FOUND       # 404 项目不存在或未授权
+        - PATH_INVALID            # 400 相对路径语法不符合规则
+        - PATH_FORBIDDEN          # 403 路径越出授权根目录
+        - FILE_NOT_FOUND          # 404 文件/目录不存在
+        - UNSUPPORTED_FORMAT      # 415 二进制或无法安全解码
+        - FILE_TOO_LARGE          # 413 超出大小上限
+        - VERSION_CONFLICT        # 409 保存时 base_version 已过期
+        - ALREADY_EXISTS          # 409 创建时目标已存在 / 恢复时路径被占用
+        - IO_ERROR                # 500 磁盘/权限等 IO 失败
+
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: 面向用户的简短说明（中文）。
+        request_id:
+          type: string
+          format: uuid
+        details:
+          type: object
+          additionalProperties: true
+          description: 结构化补充信息（如 current_version、path）。
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorBody'
