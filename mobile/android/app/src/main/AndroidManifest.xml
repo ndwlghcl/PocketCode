@@ -38,4 +38,6 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 扫码配对需要相机；mlkit 插件清单未声明，必须由应用声明 -->
+    <uses-permission android:name="android.permission.CAMERA" />
 </manifest>

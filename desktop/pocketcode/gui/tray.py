@@ -20,22 +20,25 @@ class TrayIcon(QSystemTrayIcon):
         self.setToolTip("PocketCode 服务")
 
         menu = QMenu()
+        # 菜单和所有动作都挂到 self 上，防止 PySide6 把无引用的 QObject 回收
+        # （回收后菜单项会消失）。
+        self._menu = menu
 
-        self._open_action = QAction("打开管理窗口")
+        self._open_action = QAction("打开管理窗口", menu)
         self._open_action.triggered.connect(self._show_window)
         menu.addAction(self._open_action)
 
         menu.addSeparator()
 
-        self._toggle_action = QAction("暂停服务")
+        self._toggle_action = QAction("暂停服务", menu)
         self._toggle_action.triggered.connect(self._toggle_service)
         menu.addAction(self._toggle_action)
 
         menu.addSeparator()
 
-        quit_action = QAction("退出")
-        quit_action.triggered.connect(self._quit)
-        menu.addAction(quit_action)
+        self._quit_action = QAction("退出", menu)
+        self._quit_action.triggered.connect(self._quit)
+        menu.addAction(self._quit_action)
 
         self.setContextMenu(menu)
         self.activated.connect(self._on_activated)
@@ -68,5 +71,6 @@ class TrayIcon(QSystemTrayIcon):
 
     def _quit(self) -> None:
         self.hide()
+        self._window.allow_close = True
         self._controller.shutdown()
         QApplication.quit()

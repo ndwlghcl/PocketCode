@@ -104,7 +104,8 @@ export interface FileContentResponse {
 
 export interface FileSaveRequest {
   path: RelativePath;
-  base_version: Sha256Version;
+  /** sha256:<64hex>；服务端强制校验格式与冲突。 */
+  base_version: string;
   content: string;
   encoding: TextEncoding;
   newline: NewlineStyle;

@@ -23,3 +23,9 @@ mobile/android/*.iml
 .vscode/
 Thumbs.db
 .DS_Store
+
+# Capacitor 生成的同步产物（cap sync 可再生）
+mobile/android/app/src/main/assets/public/
+mobile/android/app/src/main/assets/capacitor.config.json
+mobile/android/app/src/main/assets/capacitor.plugins.json
+mobile/android/capacitor-cordova-android-plugins/

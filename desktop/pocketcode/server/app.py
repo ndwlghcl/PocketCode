@@ -13,13 +13,18 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pocketcode.server.errors import STATUS_TO_GENERIC_CODE, ApiError
 from pocketcode.server.routes.health import router as health_router
+from pocketcode.server.routes.mutations import router as mutations_router
+from pocketcode.server.routes.pairing import router as pairing_router
+from pocketcode.server.routes.projects import router as projects_router
 from pocketcode.server.schemas import ErrorBody, ErrorResponse
-from pocketcode.storage.settings_store import Settings
+from pocketcode.storage.settings_store import Settings, SettingsStore
+from pocketcode.services.pairing import PairingService
 
 logger = logging.getLogger("pocketcode.server")
 
@@ -57,18 +62,42 @@ def register_error_handlers(app: FastAPI) -> None:
         return _error_response(request, "IO_ERROR", "服务内部错误", 500)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    """构建 FastAPI 应用。settings 当前仅保留备用（路由未使用任何可变配置）。"""
+def create_app(settings: Settings | None = None,
+               store: SettingsStore | None = None,
+               pairing: PairingService | None = None) -> FastAPI:
+    """构建 FastAPI 应用。
+
+    store：设置仓储，鉴权依赖与项目/配对路由读取配对设备/授权项目；
+    pairing：配对服务（二维码会话与确认协调）；
+    任一未提供时相关能力按"未启用"处理（业务接口一律 401 / 配对码无效）。
+    """
     app = FastAPI(
         title="PocketCode Server",
-        version="1.0.0-s0",
+        version="1.0.0-s3",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
     )
     app.state.settings = settings
+    app.state.store = store
+    app.state.pairing = pairing
 
     app.include_router(health_router)
+    app.include_router(projects_router)
+    app.include_router(pairing_router)
+    app.include_router(mutations_router)
+
+    # 手机 App 的页面运行在 WebView 本地源（https://localhost 等）上，
+    # 浏览器安全模型要求服务端显式允许该来源读取响应（CORS）。
+    # 只放行 App 自身的本地源，任意外部网站仍无法读取本服务；
+    # 数据安全仍由 Bearer 认证保证（S2 起），CORS 不是访问控制的替代。
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^(https?|capacitor)://localhost(:\d+)?$",
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type", "Authorization"],
+        allow_credentials=False,
+    )
 
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):

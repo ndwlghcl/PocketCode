@@ -7,6 +7,7 @@ asyncio 事件循环，Qt UI 留在主线程。暂停服务 = 停止监听；恢
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Callable
 
 import uvicorn
@@ -21,10 +22,14 @@ class ServerRunner:
         app_factory: Callable[[], FastAPI],
         host: str = "0.0.0.0",
         port: int = 8765,
+        ssl_certfile: str | Path | None = None,
+        ssl_keyfile: str | Path | None = None,
     ) -> None:
         self._app_factory = app_factory
         self._host = host
         self._port = port
+        self._ssl_certfile = str(ssl_certfile) if ssl_certfile else None
+        self._ssl_keyfile = str(ssl_keyfile) if ssl_keyfile else None
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
 
@@ -43,6 +48,8 @@ class ServerRunner:
                 port=self._port,
                 log_level="info",
                 access_log=False,
+                ssl_certfile=self._ssl_certfile,
+                ssl_keyfile=self._ssl_keyfile,
             )
         )
         self._server = server

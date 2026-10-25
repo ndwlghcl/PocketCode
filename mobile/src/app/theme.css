@@ -58,6 +58,24 @@ body {
   background: var(--card);
 }
 
+.statusbar__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusbar__action {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--accent);
+  border-radius: 8px;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
 .statusbar__dot {
   width: 8px;
   height: 8px;
@@ -67,6 +85,145 @@ body {
 
 .statusbar__dot--offline {
   background: var(--offline);
+}
+
+.statusbar__dot--ok {
+  background: #16a34a;
+}
+
+.statusbar__dot--unknown {
+  background: var(--text-dim);
+}
+
+.statusbar__dot--warn {
+  background: #dc2626;
+}
+
+.codeview {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 0;
+  font-family: "Cascadia Mono", Consolas, "JetBrains Mono", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;      /* 视觉折行：不改源文件字节（PRD §4.2） */
+  word-break: break-all;
+  overflow-x: hidden;
+  color: var(--text);
+  max-height: 70vh;
+  overflow-y: auto;
+  tab-size: 4;
+}
+
+/* 编辑模式的 textarea：默认只有 2 行高，必须显式撑满剩余空间；
+   resize 手柄关闭（用户不需要拖拽调整）。 */
+.editarea {
+  display: block;
+  height: calc(100vh - 360px);
+  min-height: 220px;
+  max-height: none;
+  resize: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.field__label {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin: 8px 0 6px;
+}
+
+.field__input {
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 16px;
+  padding: 12px 14px;
+}
+
+.btnrow {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.btn {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 10px;
+  font-size: 15px;
+  padding: 12px 10px;
+}
+
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.btn--danger {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: #dc2626;
+  border-radius: 10px;
+  font-size: 14px;
+  padding: 10px;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+}
+
+.hint--error {
+  color: #dc2626;
+}
+
+.result {
+  margin-top: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  padding: 14px 16px;
+}
+
+.result--ok {
+  border-color: #16a34a;
+}
+
+.result--bad {
+  border-color: #dc2626;
+}
+
+.result__title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.result__hint {
+  margin: 8px 0 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cardlist__item--static {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-top: 14px;
 }
 
 .screen {

@@ -733,7 +733,11 @@ components:
         content:
           type: string
           maxLength: 4194304
-          description: 全量文本内容（非增量、非 base64）。
+          description: |
+            全量文本内容（非增量、非 base64）。
+            换行统一以 LF 表示：服务端先把 content 中的 CRLF/CR 归一化为 LF，
+            再按 newline 字段写回目标换行风格（移动端输入框会把 CRLF 归一成
+            LF，该约定保证手机保存 CRLF 文件不丢格式）。
         encoding:
           $ref: '#/components/schemas/TextEncoding'
         newline:

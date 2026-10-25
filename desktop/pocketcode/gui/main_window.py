@@ -7,6 +7,7 @@ S0 为骨架：项目与配对列表展示持久化数据（当前为空），�
 from __future__ import annotations
 
 import json
+import ssl
 import threading
 import urllib.error
 import urllib.request
@@ -14,11 +15,12 @@ import urllib.request
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
+    QListWidgetItem,
     QListWidget,
     QMainWindow,
     QMessageBox,
@@ -30,6 +32,11 @@ from PySide6.QtWidgets import (
 
 from pocketcode.app_controller import AppController, ServiceState
 from pocketcode.gui.bridge import GuiBridge
+from pocketcode.gui.pairing_dialogs import (
+    PairingConfirmationBroker,
+    PairingQrDialog,
+    ask_pair_confirmation,
+)
 
 _STATE_TEXT = {
     ServiceState.STOPPED: "已停止",
@@ -48,6 +55,9 @@ class MainWindow(QMainWindow):
         self._bridge.service_state_changed.connect(self._on_state_changed)
         self._bridge.diagnostic_finished.connect(self._on_diagnostic_finished)
         self._first_hide_hint_shown = False
+        # 托盘「退出」置为 True 后再 QApplication.quit()：Qt 6.5+ 的 quit()
+        # 会先逐个关闭顶层窗口，closeEvent 需据此区分“用户点 ✕”和“真退出”。
+        self.allow_close = False
 
         self.setWindowTitle("PocketCode 管理窗口")
         self.resize(520, 720)
@@ -55,6 +65,21 @@ class MainWindow(QMainWindow):
 
         controller.add_listener(self._bridge.service_state_changed.emit)
         self._on_state_changed(controller.state)
+
+        # 配对确认：服务线程回调 → 主线程弹窗
+        self._pairing_broker = PairingConfirmationBroker(
+            controller.pairing.confirm_timeout_seconds
+        )
+        self._pairing_broker.pair_requested.connect(self._on_pair_requested)
+        controller.pairing.set_confirmation_callback(self._pairing_broker.callback)
+
+    def _on_pair_requested(self, request_id: str, device_name: str, platform: str) -> None:
+        ask_pair_confirmation(
+            self, request_id, device_name, platform, self._pairing_broker
+        )
+        self._refresh_device_list()  # 配对成败都会改变设备列表
+        self.raise_()
+        self.activateWindow()
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -76,10 +101,17 @@ class MainWindow(QMainWindow):
         self._service_state_label = QLabel()
         self._address_label = QLabel()
         self._address_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        hint = QLabel("局域网地址将在 S1 热点连通性实验中用于手机手动连接。")
+        self._fingerprint_label = QLabel("—")
+        self._fingerprint_label.setWordWrap(True)
+        self._fingerprint_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        fingerprint_font = self._fingerprint_label.font()
+        fingerprint_font.setPointSize(max(fingerprint_font.pointSize() - 2, 7))
+        self._fingerprint_label.setFont(fingerprint_font)
+        hint = QLabel("局域网地址将在 S2 配对时写入二维码；证书指纹供手机配对时人工核对。")
         hint.setWordWrap(True)
         form.addRow("服务：", self._service_state_label)
         form.addRow("地址：", self._address_label)
+        form.addRow("证书指纹：", self._fingerprint_label)
         form.addRow(hint)
         return group
 
@@ -91,10 +123,10 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         add_btn = QPushButton("添加项目…")
         remove_btn = QPushButton("移除所选")
-        add_btn.setEnabled(False)
-        remove_btn.setEnabled(False)
-        add_btn.setToolTip("S2 阶段提供：通过文件夹选择器授权项目目录")
-        remove_btn.setToolTip("S2 阶段提供")
+        add_btn.clicked.connect(self._on_add_project)
+        remove_btn.clicked.connect(self._on_remove_project)
+        add_btn.setToolTip("选择一个本机目录授权给手机访问")
+        remove_btn.setToolTip("移除后手机将无法再访问该目录")
         buttons.addWidget(add_btn)
         buttons.addWidget(remove_btn)
         layout.addLayout(buttons)
@@ -107,9 +139,13 @@ class MainWindow(QMainWindow):
         self._device_list = QListWidget()
         layout.addWidget(self._device_list)
         buttons = QHBoxLayout()
+        qr_btn = QPushButton("显示配对二维码…")
         revoke_btn = QPushButton("撤销所选设备授权")
-        revoke_btn.setEnabled(False)
-        revoke_btn.setToolTip("S2 阶段提供：撤销后该手机立即失去访问权")
+        qr_btn.clicked.connect(self._on_show_pairing_qr)
+        revoke_btn.clicked.connect(self._on_revoke_device)
+        qr_btn.setToolTip("手机扫码后发起配对，本机确认后生效")
+        revoke_btn.setToolTip("撤销后该手机立即失去访问权")
+        buttons.addWidget(qr_btn)
         buttons.addWidget(revoke_btn)
         layout.addLayout(buttons)
         self._refresh_device_list()
@@ -148,24 +184,82 @@ class MainWindow(QMainWindow):
         self._service_state_label.setText(_STATE_TEXT.get(state, state.value))
         if state is ServiceState.RUNNING:
             self._address_label.setText("、".join(self._controller.lan_addresses()))
-        elif state is ServiceState.ERROR:
-            self._address_label.setText("—")
+            self._fingerprint_label.setText(self._controller.tls_fingerprint or "—")
         else:
             self._address_label.setText("—")
+            if state in (ServiceState.STOPPED, ServiceState.PAUSED):
+                self._fingerprint_label.setText(self._controller.tls_fingerprint or "—")
 
     def _refresh_project_list(self) -> None:
         self._project_list.clear()
-        for project in self._controller.settings.authorized_projects:
-            self._project_list.addItem(f"{project.name}（{project.root_path}）")
-        if not self._controller.settings.authorized_projects:
-            self._project_list.addItem("（暂无授权项目，S2 阶段添加）")
+        projects = self._controller.settings.authorized_projects
+        for project in projects:
+            item = QListWidgetItem(f"{project.name}（{project.root_path}）")
+            item.setData(Qt.ItemDataRole.UserRole, project.id)
+            self._project_list.addItem(item)
+        if not projects:
+            placeholder = QListWidgetItem("（暂无授权项目，点「添加项目…」选择文件夹）")
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._project_list.addItem(placeholder)
 
     def _refresh_device_list(self) -> None:
         self._device_list.clear()
-        for device in self._controller.settings.paired_devices:
-            self._device_list.addItem(f"{device.name}（配对于 {device.paired_at}）")
-        if not self._controller.settings.paired_devices:
-            self._device_list.addItem("（暂无已配对手机，S2 阶段配对）")
+        devices = self._controller.settings.paired_devices
+        for device in devices:
+            item = QListWidgetItem(f"{device.name}（配对于 {device.paired_at}）")
+            item.setData(Qt.ItemDataRole.UserRole, device.id)
+            self._device_list.addItem(item)
+        if not devices:
+            placeholder = QListWidgetItem("（暂无已配对手机，点「显示配对二维码…」）")
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._device_list.addItem(placeholder)
+
+    # -------------------------------------------------------------- 项目与设备
+    def _on_add_project(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择要授权给手机访问的项目文件夹"
+        )
+        if not directory:
+            return
+        try:
+            self._controller.add_project(directory)
+        except ValueError as exc:
+            QMessageBox.warning(self, "添加项目失败", str(exc))
+            return
+        self._refresh_project_list()
+
+    def _on_remove_project(self) -> None:
+        item = self._project_list.currentItem()
+        project_id = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if not project_id:
+            QMessageBox.information(self, "移除项目", "请先选择一个项目。")
+            return
+        confirm = QMessageBox.question(
+            self, "移除项目", "移除后手机将无法访问该项目目录。确认移除？"
+        )
+        if confirm is not QMessageBox.StandardButton.Yes:
+            return
+        self._controller.remove_project(project_id)
+        self._refresh_project_list()
+
+    def _on_revoke_device(self) -> None:
+        item = self._device_list.currentItem()
+        device_id = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if not device_id:
+            QMessageBox.information(self, "撤销授权", "请先选择一台设备。")
+            return
+        confirm = QMessageBox.question(
+            self, "撤销设备授权", "撤销后该手机将立即失去访问权。确认撤销？"
+        )
+        if confirm is not QMessageBox.StandardButton.Yes:
+            return
+        self._controller.revoke_device(device_id)
+        self._refresh_device_list()
+
+    def _on_show_pairing_qr(self) -> None:
+        code = self._controller.pairing.create_session()
+        payload = self._controller.pairing_qr_payload(code)
+        PairingQrDialog(payload, code, parent=self).exec()
 
     # -------------------------------------------------------------- 动作
     def _on_apply_settings(self) -> None:
@@ -179,12 +273,16 @@ class MainWindow(QMainWindow):
         self._diag_result.setText("正在请求…")
 
         def worker() -> None:
-            url = f"http://127.0.0.1:{self._controller.port}/v1/health"
+            url = f"https://127.0.0.1:{self._controller.port}/v1/health"
+            # 本机自检只确认服务存活；自签证书校验由手机端配对流程负责。
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
             try:
-                with urllib.request.urlopen(url, timeout=3.0) as resp:  # noqa: S310 - 本机回环
+                with urllib.request.urlopen(url, timeout=3.0, context=context) as resp:  # noqa: S310 - 本机回环
                     body = resp.read().decode("utf-8", errors="replace")
                     pretty = json.dumps(json.loads(body), ensure_ascii=False)
-                    self._bridge.diagnostic_finished.emit(True, f"HTTP {resp.status} — {pretty}")
+                    self._bridge.diagnostic_finished.emit(True, f"HTTPS {resp.status} — {pretty}")
             except urllib.error.HTTPError as exc:
                 self._bridge.diagnostic_finished.emit(False, f"HTTP {exc.code}（意外状态）")
             except Exception as exc:  # noqa: BLE001 - 诊断需要展示全部失败原因
@@ -198,7 +296,11 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- 关闭
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        # PRD §3.3：关闭管理窗口不退出，托盘「退出」才结束服务。
+        if self.allow_close:
+            # 托盘「退出」触发的关闭：放行，让应用正常结束。
+            event.accept()
+            return
+        # PRD §3.3：用户点 ✕ 是“隐藏到托盘”，不是退出。
         was_visible = self.isVisible()
         event.ignore()
         self.hide()

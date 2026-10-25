@@ -13,9 +13,11 @@
 | [docs/DEV_PLAN_v0.1.md](docs/DEV_PLAN_v0.1.md) | 阶段划分与 GLM 协作制度 |
 | [contracts/openapi.yaml](contracts/openapi.yaml) | **接口唯一合同**（v1 语义冻结） |
 | [contracts/errors.md](contracts/errors.md) | 错误码对照表 |
+| [docs/HANDOFF.md](docs/HANDOFF.md) | **交接文档：新对话从这里接手**（现状/待办/未解决问题调查记录） |
 | [docs/decisions/](docs/decisions/) | ADR：重大技术决策留痕 |
 | [docs/BUILD_ENVIRONMENT.md](docs/BUILD_ENVIRONMENT.md) | 依赖版本、许可证、APK 构建环境 |
-| [docs/S0_测试卡.md](docs/S0_测试卡.md) | 当前阶段的用户测试步骤 |
+| [docs/PRD_addendum.md](docs/PRD_addendum.md) | PRD v1.1 之后用户确认的新增需求 |
+| [docs/S0_测试卡.md](docs/S0_测试卡.md) / [docs/S1_测试卡.md](docs/S1_测试卡.md) | 各阶段的用户测试步骤 |
 
 ## 目录结构
 
@@ -69,9 +71,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build-apk.ps1
 
 | 阶段 | 状态 | 说明 |
 |---|---|---|
-| S0 基础骨架 | ✅ 本次交付 | monorepo、合同 v1 冻结、Windows 骨架、APK 空壳、校验脚本 |
-| S1 热点连通性 | ⬜ | `/v1/health` 已就绪，待真机热点实验与手动 IP 诊断 UI |
-| S2 配对 + 只读闭环 | ⬜ | 合同已冻结，未实现 |
+| S0 基础骨架 | ✅ 已完成并通过真机验收 | monorepo、合同 v1 冻结、Windows 骨架、APK 空壳、校验脚本 |
+| S1 热点连通性 | ✅ 已完成并通过真机验收 | `/v1/health` + App 手动地址诊断/在线离线状态；热点互访、离线恢复、错误提示全部真机验证 |
+| S2 配对 + 只读闭环 | ✅ 已完成并通过真机验收 | HTTPS 指纹校验、扫码配对、真实项目浏览/只读阅读、离线缓存 |
+| S3 可日用编辑 | 🔶 编辑主链路真机验收通过，剩收尾三项 | 编辑/多草稿/冲突/离线保存 ✅；滚动位置记忆未解决（见 docs/HANDOFF.md §5）；目录新建/删除入口、桌面快照恢复界面待做 |
 | S3 可日用编辑 | ⬜ | |
 | S4 体验增强 | ⬜ | |
 | S5 高阶 | ⬜ | |

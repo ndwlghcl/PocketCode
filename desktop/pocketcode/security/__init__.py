@@ -1,11 +1,19 @@
-"""安全层占位包（S2 实现）。
+"""安全层：S2a 落地 TLS 证书与设备令牌认证；路径防护见 path_guard。"""
 
-将承载：
-- 设备 token 鉴权依赖（除 health/pair 外全部拒绝匿名访问）
-- 授权路径校验：真实路径重算，防 `..`、绝对路径、符号链接/junction 越界
-  （不允许只用字符串 startswith 判断，架构文档 §5）
-- 自签 TLS 证书与证书指纹校验
-- 日志脱敏
+from pocketcode.security.auth import (
+    DeviceIdentity,
+    generate_device_token,
+    hash_token,
+    require_device,
+)
+from pocketcode.security.tls import ServerTls, TlsError, ensure_server_tls
 
-文件所有权归「Windows 后端 GLM」。
-"""
+__all__ = [
+    "DeviceIdentity",
+    "ServerTls",
+    "TlsError",
+    "ensure_server_tls",
+    "generate_device_token",
+    "hash_token",
+    "require_device",
+]

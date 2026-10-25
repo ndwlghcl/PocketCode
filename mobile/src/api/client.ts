@@ -1,6 +1,6 @@
 /**
  * 统一网络客户端：所有对电脑的调用都经过这里，错误统一解析为 PocketCodeError。
- * S0 提供类型与错误解析（可单测）；真实请求在 S1/S2 接入。
+ * S2c 起：请求经传输层（原生桥做 TLS 指纹校验），携带配对时核对的指纹。
  */
 
 import type {
@@ -19,6 +19,7 @@ import type {
   TrashRequest,
   TrashResponse,
 } from './types';
+import { platformTransport, TransportError, type TransportFn } from './transport';
 
 /** 客户端本地状态码（不出现在服务端错误码枚举中）。 */
 export const OFFLINE_CODE = 'OFFLINE' as const;
@@ -41,12 +42,14 @@ export class PocketCodeError extends Error {
 }
 
 export interface ClientOptions {
-  /** 例如 http://192.168.43.10:8765 */
+  /** 例如 https://10.59.163.124:8765 */
   baseUrl: string;
   /** 配对后颁发的设备 token。 */
   token?: string;
-  /** 可注入 fetch 便于测试；默认 globalThis.fetch。 */
-  fetchImpl?: typeof fetch;
+  /** 配对时核对的证书指纹（sha256:…），原生侧强制校验。 */
+  fingerprint?: string;
+  /** 可注入传输层便于测试；默认按平台选择。 */
+  transport?: TransportFn;
   /** 请求超时毫秒数，默认 8000。 */
   timeoutMs?: number;
 }
@@ -54,13 +57,15 @@ export interface ClientOptions {
 export class PocketCodeClient {
   private readonly baseUrl: string;
   private readonly token?: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fingerprint?: string;
+  private readonly transport: TransportFn;
   private readonly timeoutMs: number;
 
   constructor(options: ClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.token = options.token;
-    this.fetchImpl = options.fetchImpl ?? ((...args) => fetch(...args));
+    this.fingerprint = options.fingerprint;
+    this.transport = options.transport ?? platformTransport;
     this.timeoutMs = options.timeoutMs ?? 8000;
   }
 
@@ -110,47 +115,53 @@ export class PocketCodeClient {
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response: Response;
+    let result;
     try {
-      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      result = await this.transport({
+        url: `${this.baseUrl}${path}`,
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: controller.signal,
+        fingerprint: this.fingerprint,
+        timeoutMs: this.timeoutMs,
       });
-    } catch {
-      throw new PocketCodeError(0, OFFLINE_CODE, '无法连接电脑（网络不可达或超时）');
-    } finally {
-      clearTimeout(timer);
+    } catch (error) {
+      if (error instanceof TransportError) {
+        throw new PocketCodeError(0, OFFLINE_CODE, error.message, undefined, {
+          kind: error.kind,
+        });
+      }
+      throw error;
     }
 
-    if (!response.ok) {
-      throw await this.toPocketCodeError(response);
+    if (result.status >= 400) {
+      throw this.toPocketCodeError(result);
     }
-    if (response.status === 204) {
+    if (result.status === 204 || result.bodyText === '') {
       return undefined as T;
     }
-    return (await response.json()) as T;
+    try {
+      return JSON.parse(result.bodyText) as T;
+    } catch {
+      throw new PocketCodeError(result.status, 'IO_ERROR', '响应不是合法 JSON');
+    }
   }
 
-  private async toPocketCodeError(response: Response): Promise<PocketCodeError> {
-    let parsed: ErrorResponse | null = null;
+  private toPocketCodeError(result: { status: number; bodyText: string }): PocketCodeError {
     try {
-      parsed = (await response.json()) as ErrorResponse;
+      const parsed = JSON.parse(result.bodyText) as ErrorResponse;
+      if (parsed?.error) {
+        return new PocketCodeError(
+          result.status,
+          parsed.error.code,
+          parsed.error.message,
+          parsed.error.request_id,
+          parsed.error.details,
+        );
+      }
     } catch {
       // 非 JSON 错误体：退化为通用错误
     }
-    if (parsed?.error) {
-      return new PocketCodeError(
-        response.status,
-        parsed.error.code,
-        parsed.error.message,
-        parsed.error.request_id,
-        parsed.error.details,
-      );
-    }
-    return new PocketCodeError(response.status, 'IO_ERROR', `服务返回异常状态 ${response.status}`);
+    return new PocketCodeError(result.status, 'IO_ERROR', `服务返回异常状态 ${result.status}`);
   }
 }
