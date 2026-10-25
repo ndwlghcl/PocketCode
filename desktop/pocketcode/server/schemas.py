@@ -164,3 +164,65 @@ class TrashListResponse(BaseModel):
 class RestoreResponse(BaseModel):
     trash_id: str
     restored_path: str
+
+
+# ---------------------------------------------------------------- S4 搜索
+class SearchLineMatch(BaseModel):
+    line: int = Field(ge=1)
+    text: str
+
+
+class SearchFileMatches(BaseModel):
+    path: str
+    lines: list[SearchLineMatch]
+
+
+class SearchResponse(BaseModel):
+    query: str
+    total_matches: int = Field(ge=0)
+    truncated: bool
+    matches: list[SearchFileMatches]
+
+
+# ---------------------------------------------------------------- S4 诊断
+class DiagnoseRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=512)
+    content: str
+
+
+class Diagnostic(BaseModel):
+    line: int = Field(ge=1)
+    column: int = Field(ge=1)
+    severity: Literal["error", "warning"]
+    code: str
+    message: str
+
+
+class DiagnoseResponse(BaseModel):
+    analyzer: str
+    diagnostics: list[Diagnostic]
+
+
+# ---------------------------------------------------------------- S4 Git
+class GitFileStatus(BaseModel):
+    path: str
+    index_status: Literal[
+        "none", "added", "modified", "deleted", "renamed", "copied", "typechange", "conflicted"
+    ]
+    worktree_status: Literal[
+        "none", "added", "modified", "deleted", "renamed", "copied", "typechange",
+        "untracked", "conflicted",
+    ]
+
+
+class GitStatusResponse(BaseModel):
+    available: bool
+    reason: str | None = None
+    branch: str | None = None
+    changes: list[GitFileStatus]
+
+
+class GitDiffResponse(BaseModel):
+    path: str
+    diff: str
+    truncated: bool

@@ -1,0 +1,19 @@
+{
+  "query": "serpapi",
+  "total_matches": 3,
+  "truncated": false,
+  "matches": [
+    {
+      "path": "agents/search.py",
+      "lines": [
+        { "line": 3, "text": "from serpapi import SerpApiClient" },
+        { "line": 6, "text": "def search(query: str) -> str:" },
+        { "line": 11, "text": "    print(f\"正在执行 [SerpApi] 网页搜索：{query}\")" }
+      ]
+    },
+    {
+      "path": "notes.md",
+      "lines": [{ "line": 2, "text": "- serpapi 的 key 放在 .env（已排除，不会出现在搜索范围）" }]
+    }
+  ]
+}

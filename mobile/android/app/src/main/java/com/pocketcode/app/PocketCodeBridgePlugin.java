@@ -266,6 +266,29 @@ public class PocketCodeBridgePlugin extends Plugin {
         call.resolve();
     }
 
+    /** 按前缀枚举存储键（S4a2 草稿箱需要跨文件列出全部草稿）。 */
+    @PluginMethod
+    public void dataKeys(PluginCall call) {
+        String prefix = call.getString("prefix", "");
+        try {
+            JSObject result = new JSObject();
+            com.getcapacitor.JSArray keys = new com.getcapacitor.JSArray();
+            java.io.File[] files = dataDir().listFiles();
+            if (files != null) {
+                java.util.Arrays.sort(files, java.util.Comparator.comparing(java.io.File::getName));
+                for (java.io.File file : files) {
+                    if (file.isFile() && file.getName().startsWith(prefix)) {
+                        keys.put(file.getName());
+                    }
+                }
+            }
+            result.put("keys", keys);
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("枚举存储键失败: " + e.getMessage(), "ERR_DATA");
+        }
+    }
+
     // ---------------------------------------------------------------- 系统设置
     /** 跳转本应用的系统设置页（相机权限被"永久拒绝"时的兜底入口）。 */
     @PluginMethod

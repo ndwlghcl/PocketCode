@@ -28,6 +28,7 @@ interface PocketCodeBridgePlugin {
   dataSet(options: { key: string; value: string }): Promise<void>;
   dataGet(options: { key: string }): Promise<{ value: string | null }>;
   dataDelete(options: { key: string }): Promise<void>;
+  dataKeys(options: { prefix: string }): Promise<{ keys: string[] }>;
 }
 
 export const PocketCodeBridge = registerPlugin<PocketCodeBridgePlugin>(
@@ -109,6 +110,8 @@ export interface KVStorage {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
   remove(key: string): Promise<void>;
+  /** 按前缀枚举键名（草稿箱跨文件列表用）；实现需保证失败返回空数组而非抛错。 */
+  keys(prefix: string): Promise<string[]>;
 }
 
 export const diskStorage: KVStorage = {
@@ -143,6 +146,26 @@ export const diskStorage: KVStorage = {
       localStorage.removeItem(key);
     } catch {
       // 忽略
+    }
+  },
+  async keys(prefix: string): Promise<string[]> {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const result = await PocketCodeBridge.dataKeys({ prefix });
+        return result.keys ?? [];
+      } catch {
+        return [];
+      }
+    }
+    try {
+      const found: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key !== null && key.startsWith(prefix)) found.push(key);
+      }
+      return found.sort();
+    } catch {
+      return [];
     }
   },
 };

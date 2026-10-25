@@ -24,6 +24,9 @@ function fakeStorage(): KVStorage {
     async remove(key) {
       data.delete(key);
     },
+    async keys(prefix) {
+      return [...data.keys()].filter((key) => key.startsWith(prefix)).sort();
+    },
   };
 }
 

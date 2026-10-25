@@ -19,6 +19,7 @@ from pocketcode.security.tls import TlsError, ensure_server_tls
 from pocketcode.server.app import create_app
 from pocketcode.server.runner import ServerRunner
 from pocketcode.services.pairing import PairingService
+from pocketcode.services.snapshots import list_snapshot_paths, list_snapshots, restore_snapshot
 from pocketcode.storage.settings_store import (
     AuthorizedProject,
     Settings,
@@ -195,6 +196,69 @@ class AppController:
     def revoke_device(self, device_id: str) -> bool:
         """撤销手机授权：从配对列表移除，其令牌立即失效。"""
         return self._store.remove_paired_device(device_id)
+
+    # ---- 历史快照（S3 收尾：桌面端「历史版本」查看/恢复，PRD §6.3）----
+    def _snapshots_root(self) -> Path:
+        return self._store.path.parent / "snapshots"
+
+    def snapshot_projects(self) -> list[dict]:
+        """有快照的授权项目：[{id, name, file_count}]；无快照的项目不出现。"""
+        result = []
+        for project in self.settings.authorized_projects:
+            files = list_snapshot_paths(self._snapshots_root(), project.id)
+            if files:
+                result.append(
+                    {"id": project.id, "name": project.name, "file_count": len(files)}
+                )
+        return result
+
+    def snapshot_files(self, project_id: str) -> list[dict]:
+        """某项目下有快照的文件列表：[{path, count, latest}]，新→旧。"""
+        return list_snapshot_paths(self._snapshots_root(), project_id)
+
+    def file_snapshots(self, project_id: str, relative_path: str) -> list[dict]:
+        """某文件的快照列表（新→旧）：[{saved_at, size, snapshot_file, …}]。"""
+        return list_snapshots(self._snapshots_root(), project_id, relative_path)
+
+    def restore_file_snapshot(
+        self, project_id: str, relative_path: str, snapshot_file: str
+    ) -> None:
+        """把所选快照写回项目原文件；写回前当前内容自动再快照一次。
+
+        失败抛 ValueError（消息可直接展示给用户）。
+        """
+        project = next(
+            (
+                p
+                for p in self.settings.authorized_projects
+                if p.id == project_id
+            ),
+            None,
+        )
+        if project is None:
+            raise ValueError("项目不存在或已被移除，无法恢复")
+
+        # 只允许写回快照区内的 .bin 文件（GUI 传回的路径仍按不可信输入对待）
+        snapshots_root = self._snapshots_root()
+        candidate = Path(snapshot_file).resolve()
+        allowed_root = (snapshots_root / project_id).resolve()
+        if (
+            not candidate.is_relative_to(allowed_root)
+            or candidate.suffix != ".bin"
+        ):
+            raise ValueError("快照文件无效")
+        try:
+            restore_snapshot(
+                snapshots_root,
+                Path(project.root_path),
+                project_id,
+                relative_path,
+                candidate,
+            )
+        except PathGuardError as exc:
+            raise ValueError(exc.message) from exc
+        except OSError as exc:
+            raise ValueError(f"恢复失败：{exc}") from exc
 
     # ---- 配对二维码载荷 ----
     def pairing_qr_payload(self, pairing_code: str) -> str:

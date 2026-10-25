@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  clearAllDrafts,
   clearDrafts,
+  listAllDrafts,
   loadDrafts,
   newDraftId,
   removeDraft,
+  renameDraft,
   setActiveDraft,
   upsertDraft,
   type FileDraft,
@@ -23,6 +26,9 @@ function fakeStorage(): KVStorage {
     },
     async remove(key) {
       data.delete(key);
+    },
+    async keys(prefix) {
+      return [...data.keys()].filter((key) => key.startsWith(prefix)).sort();
     },
   };
 }
@@ -92,6 +98,57 @@ describe('draftStore（草稿箱，原生磁盘 KV）', () => {
   it('clearDrafts 清空（保存成功后调用）', async () => {
     await upsertDraft('p1', 'a.py', draft('x', 'x'), storage);
     await clearDrafts('p1', 'a.py', storage);
+    expect((await loadDrafts('p1', 'a.py', storage)).drafts).toHaveLength(0);
+  });
+
+  it('renameDraft 只改名字，内容/顺序/活动态不变（S4a）', async () => {
+    const a = draft('旧名字', '内容 A');
+    const b = draft('实验 A', '内容 B');
+    await upsertDraft('p1', 'a.py', a, storage);
+    await upsertDraft('p1', 'a.py', b, storage);
+    await setActiveDraft('p1', 'a.py', a.id, storage);
+
+    const renamed = await renameDraft('p1', 'a.py', a.id, '  新名字  ', storage);
+    expect(renamed?.activeId).toBe(a.id);
+    // upsert 最新在前：b 后写入，所以 b 排前面；重命名不改变顺序
+    expect(renamed?.drafts.map((d) => d.name)).toEqual(['实验 A', '新名字']);
+    expect(renamed?.drafts.find((d) => d.id === a.id)?.content).toBe('内容 A');
+  });
+
+  it('renameDraft：不存在/空白名字时安全返回', async () => {
+    const a = draft('名字', '内容');
+    await upsertDraft('p1', 'a.py', a, storage);
+    expect(await renameDraft('p1', 'a.py', 'missing', 'x', storage)).toBeNull();
+    const same = await renameDraft('p1', 'a.py', a.id, '   ', storage);
+    expect(same?.drafts[0].name).toBe('名字');
+  });
+
+  it('listAllDrafts 跨文件/跨项目列出并按时间新→旧（S4a2 草稿箱）', async () => {
+    const a = { ...draft('旧草稿', 'A'), savedAt: '2026-10-25T08:00:00Z' };
+    const b = { ...draft('新草稿', 'B'), savedAt: '2026-10-25T09:00:00Z' };
+    await upsertDraft('p1', 'a.py', a, storage);
+    await upsertDraft('p2', 'sub/b.js', b, storage);
+
+    const items = await listAllDrafts(storage);
+    expect(items).toHaveLength(2);
+    expect(items[0].draft.name).toBe('新草稿');
+    expect(items[0].projectId).toBe('p2');
+    expect(items[0].path).toBe('sub/b.js');
+    expect(items[1].path).toBe('a.py');
+  });
+
+  it('listAllDrafts：中文路径可从键名还原', async () => {
+    await upsertDraft('p1', 'docs/笔记.md', draft('灵感', 'x'), storage);
+    const items = await listAllDrafts(storage);
+    expect(items).toHaveLength(1);
+    expect(items[0].path).toBe('docs/笔记.md');
+  });
+
+  it('clearAllDrafts 清空所有文件的草稿', async () => {
+    await upsertDraft('p1', 'a.py', draft('x', 'x'), storage);
+    await upsertDraft('p2', 'b.py', draft('y', 'y'), storage);
+    expect(await clearAllDrafts(storage)).toBe(2);
+    expect(await listAllDrafts(storage)).toHaveLength(0);
     expect((await loadDrafts('p1', 'a.py', storage)).drafts).toHaveLength(0);
   });
 });

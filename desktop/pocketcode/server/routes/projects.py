@@ -13,11 +13,17 @@ from pocketcode.security.auth import DeviceIdentity, require_device
 from pocketcode.security.path_guard import PathGuardError, validate_relative_path
 from pocketcode.server.errors import ApiError
 from pocketcode.server.schemas import (
+    DiagnoseRequest,
+    DiagnoseResponse,
     FileContentResponse,
+    GitDiffResponse,
+    GitStatusResponse,
     ManifestResponse,
     ProjectListResponse,
     ProjectSummary,
+    SearchResponse,
 )
+from pocketcode.services.diagnostics import DiagnoseServiceError, diagnose_python_source
 from pocketcode.services.files import (
     FileServiceError,
     generate_manifest,
@@ -25,6 +31,8 @@ from pocketcode.services.files import (
     project_root_or_404,
     read_text_file,
 )
+from pocketcode.services.gitinfo import GitServiceError, git_diff, git_status
+from pocketcode.services.search import SearchServiceError, search_project
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_device)])
 
@@ -108,6 +116,112 @@ def read_file(
     except FileServiceError as exc:
         _translate(exc)
     return FileContentResponse(project_id=project_id, **fields)
+
+
+@router.get(
+    "/projects/{project_id}/search",
+    response_model=SearchResponse,
+    status_code=200,
+    summary="项目全文搜索（大小写不敏感子串，按行匹配）",
+    responses={
+        400: {"description": "关键词为空或超长"},
+        404: {"description": "项目不存在"},
+    },
+)
+def search_in_project(
+    project_id: str,
+    request: Request,
+    q: str = Query(min_length=1, max_length=200),
+) -> SearchResponse:
+    store = request.app.state.store
+    try:
+        root = project_root_or_404(store, project_id)
+        result = search_project(root, q)
+    except FileServiceError as exc:
+        _translate(exc)
+    except SearchServiceError as exc:
+        raise ApiError(exc.code, exc.message) from exc
+    return SearchResponse(**result)
+
+
+@router.post(
+    "/projects/{project_id}/diagnose",
+    response_model=DiagnoseResponse,
+    status_code=200,
+    summary="检查未保存的 Python 草稿文本（不写入电脑文件）",
+    responses={
+        400: {"description": "路径不符合合同规则或内容缺失"},
+        404: {"description": "项目不存在"},
+        413: {"description": "草稿内容超过 1 MiB"},
+    },
+)
+def diagnose_draft(
+    project_id: str,
+    request: Request,
+    body: DiagnoseRequest,
+) -> DiagnoseResponse:
+    store = request.app.state.store
+    try:
+        # 只做项目级鉴权与路径语法校验：草稿尚未保存，服务端不读盘
+        project_root_or_404(store, project_id)
+        validate_relative_path(body.path)
+    except FileServiceError as exc:
+        _translate(exc)
+    except PathGuardError as exc:
+        raise ApiError(exc.code, exc.message) from exc
+    try:
+        result = diagnose_python_source(body.content)
+    except DiagnoseServiceError as exc:
+        raise ApiError(exc.code, exc.message) from exc
+    return DiagnoseResponse(**result)
+
+
+@router.get(
+    "/projects/{project_id}/git/status",
+    response_model=GitStatusResponse,
+    status_code=200,
+    summary="项目 Git 状态（只读；不是仓库时 available=false）",
+)
+def get_git_status(project_id: str, request: Request) -> GitStatusResponse:
+    store = request.app.state.store
+    try:
+        root = project_root_or_404(store, project_id)
+    except FileServiceError as exc:
+        _translate(exc)
+    result = git_status(root)
+    return GitStatusResponse(**result)
+
+
+@router.get(
+    "/projects/{project_id}/git/diff",
+    response_model=GitDiffResponse,
+    status_code=200,
+    summary="单个文件的未提交 Diff（unified 文本）",
+    responses={
+        400: {"description": "路径不符合合同规则"},
+        "500": {"description": "git 命令失败"},
+    },
+)
+def get_git_diff(
+    project_id: str,
+    request: Request,
+    path: str = Query(min_length=1, max_length=512),
+    staged: bool = False,
+) -> GitDiffResponse:
+    try:
+        validate_relative_path(path)
+    except PathGuardError as exc:
+        raise ApiError(exc.code, exc.message) from exc
+    store = request.app.state.store
+    try:
+        root = project_root_or_404(store, project_id)
+    except FileServiceError as exc:
+        _translate(exc)
+    try:
+        result = git_diff(root, path, staged)
+    except GitServiceError as exc:
+        raise ApiError(exc.code, exc.message) from exc
+    return GitDiffResponse(**result)
 
 
 __all__ = ["router", "DeviceIdentity"]

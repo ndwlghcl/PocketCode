@@ -10,12 +10,18 @@ import type {
   FileCreateResponse,
   FileSaveRequest,
   FileSaveResponse,
+  DiagnoseRequest,
+  DiagnoseResponse,
+  GitDiffResponse,
+  GitStatusResponse,
   HealthResponse,
   ManifestResponse,
   PairCompleteRequest,
   PairCompleteResponse,
   ProjectListResponse,
   RestoreResponse,
+  SearchResponse,
+  TrashListResponse,
   TrashRequest,
   TrashResponse,
 } from './types';
@@ -103,6 +109,48 @@ export class PocketCodeClient {
 
   async trashEntries(projectId: string, body: TrashRequest): Promise<TrashResponse> {
     return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/trash`, body);
+  }
+
+  async listTrash(): Promise<TrashListResponse> {
+    return this.request('GET', '/v1/trash');
+  }
+
+  async searchProject(projectId: string, query: string): Promise<SearchResponse> {
+    const params = new URLSearchParams({ q: query });
+    return this.request(
+      'GET',
+      `/v1/projects/${encodeURIComponent(projectId)}/search?${params.toString()}`,
+    );
+  }
+
+  async diagnose(
+    projectId: string,
+    body: DiagnoseRequest,
+  ): Promise<DiagnoseResponse> {
+    return this.request(
+      'POST',
+      `/v1/projects/${encodeURIComponent(projectId)}/diagnose`,
+      body,
+    );
+  }
+
+  async gitStatus(projectId: string): Promise<GitStatusResponse> {
+    return this.request(
+      'GET',
+      `/v1/projects/${encodeURIComponent(projectId)}/git/status`,
+    );
+  }
+
+  async gitDiff(
+    projectId: string,
+    path: string,
+    staged: boolean,
+  ): Promise<GitDiffResponse> {
+    const params = new URLSearchParams({ path, staged: staged ? 'true' : 'false' });
+    return this.request(
+      'GET',
+      `/v1/projects/${encodeURIComponent(projectId)}/git/diff?${params.toString()}`,
+    );
   }
 
   async restoreTrash(trashId: string): Promise<RestoreResponse> {

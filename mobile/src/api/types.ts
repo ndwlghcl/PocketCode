@@ -146,9 +146,101 @@ export interface TrashResponse {
   items: TrashItem[];
 }
 
+export interface TrashEntry {
+  trash_id: string;
+  project_id: string;
+  original_path: RelativePath;
+  deleted_at: string;
+  kind: 'file' | 'dir';
+  /** 仅 file 提供。 */
+  size?: number;
+}
+
+export interface TrashListResponse {
+  items: TrashEntry[];
+}
+
 export interface RestoreResponse {
   trash_id: string;
   restored_path: RelativePath;
+}
+
+// ---------------------------------------------------------------- S4b 搜索
+
+export interface SearchLineMatch {
+  /** 1-based 行号。 */
+  line: number;
+  text: string;
+}
+
+export interface SearchFileMatches {
+  path: RelativePath;
+  lines: SearchLineMatch[];
+}
+
+export interface SearchResponse {
+  query: string;
+  total_matches: number;
+  truncated: boolean;
+  matches: SearchFileMatches[];
+}
+
+// ---------------------------------------------------------------- S4d 诊断
+
+export interface DiagnoseRequest {
+  /** 草稿对应的目标文件路径（仅上下文，服务端不读盘）。 */
+  path: RelativePath;
+  /** 草稿文本（LF 换行）。 */
+  content: string;
+}
+
+export interface Diagnostic {
+  line: number;
+  column: number;
+  severity: 'error' | 'warning';
+  code: string;
+  message: string;
+}
+
+export interface DiagnoseResponse {
+  /** 如 "ast" 或 "pyflakes+3.2"；能力差异如实上报。 */
+  analyzer: string;
+  diagnostics: Diagnostic[];
+}
+
+// ---------------------------------------------------------------- S4e Git
+
+export type GitIndexStatus =
+  | 'none'
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'copied'
+  | 'typechange'
+  | 'conflicted';
+
+export type GitWorktreeStatus = GitIndexStatus | 'untracked';
+
+export interface GitFileStatus {
+  path: RelativePath;
+  index_status: GitIndexStatus;
+  worktree_status: GitWorktreeStatus;
+}
+
+export interface GitStatusResponse {
+  available: boolean;
+  /** available=false 时的原因（不是 git 仓库 / git 未安装）。 */
+  reason?: string | null;
+  branch?: string | null;
+  changes: GitFileStatus[];
+}
+
+export interface GitDiffResponse {
+  path: RelativePath;
+  /** unified diff 文本；无差异/未跟踪文件时为空字符串。 */
+  diff: string;
+  truncated: boolean;
 }
 
 export interface PairCompleteRequest {

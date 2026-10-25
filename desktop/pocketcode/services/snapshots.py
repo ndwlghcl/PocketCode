@@ -11,8 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
+import uuid
 from pathlib import Path
+
+from pocketcode.security.path_guard import PathGuardError, resolve_under_root
 
 KEEP_PER_PATH = 20
 
@@ -28,7 +32,11 @@ def snapshot_previous(
         return None
     path_dir = snapshots_root / project_id / _path_hash(relative_path)
     path_dir.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + f"-{time.time_ns() % 1_000_000:06d}"
+    # 秒内用完整 9 位纳秒：旧实现取 ns%1e6（毫秒内循环），同一秒内相隔
+    # 整毫秒的两次快速保存会生成同名快照互相覆盖。
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + (
+        f"-{time.time_ns() % 1_000_000_000:09d}"
+    )
     snap_file = path_dir / f"{stamp}.bin"
     meta_file = path_dir / f"{stamp}.json"
     snap_file.write_bytes(previous_bytes)
@@ -63,6 +71,74 @@ def list_snapshots(snapshots_root: Path, project_id: str, relative_path: str) ->
         except (OSError, ValueError):
             continue
     return snapshots
+
+
+def list_snapshot_paths(snapshots_root: Path, project_id: str) -> list[dict]:
+    """汇总某项目有快照的文件（相对路径、快照数、最近快照时间），新→旧。
+
+    桌面端「历史版本」区块的第一级列表：先选文件，再列该文件的快照。
+    """
+    project_dir = snapshots_root / project_id
+    if not project_dir.is_dir():
+        return []
+    by_path: dict[str, dict] = {}
+    for meta_path in project_dir.rglob("*.json"):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not meta_path.with_suffix(".bin").exists():
+            continue
+        relative = str(meta.get("path", ""))
+        if not relative:
+            continue
+        entry = by_path.setdefault(
+            relative, {"path": relative, "count": 0, "latest": ""}
+        )
+        entry["count"] += 1
+        saved_at = str(meta.get("saved_at", ""))
+        if saved_at > entry["latest"]:
+            entry["latest"] = saved_at
+    return sorted(by_path.values(), key=lambda e: e["latest"], reverse=True)
+
+
+def restore_snapshot(
+    snapshots_root: Path,
+    project_root: Path,
+    project_id: str,
+    relative_path: str,
+    snapshot_file: Path,
+) -> Path:
+    """把一份快照写回项目原文件；返回写回的目标路径。
+
+    恢复语义（PRD §6.3）：
+    - 相对路径重新走 path_guard：快照元数据即使被篡改也不能变成越界写；
+    - 写回前先把**当前**文件内容另存为新快照——恢复操作本身可再次回退；
+    - 与保存相同的「临时文件 + 原子替换」写法，不产生半写状态。
+    """
+    target = resolve_under_root(project_root, relative_path)
+    payload = Path(snapshot_file)
+    if not payload.is_file():
+        raise FileNotFoundError(f"快照文件不存在：{snapshot_file}")
+    new_bytes = payload.read_bytes()
+
+    if target.exists() and target.is_file():
+        snapshot_previous(
+            snapshots_root, project_id, relative_path, target.read_bytes()
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".pocketcode-restore-{uuid.uuid4().hex[:12]}")
+    try:
+        with tmp.open("wb") as handle:
+            handle.write(new_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+    return target
 
 
 def _path_hash(relative_path: str) -> str:

@@ -94,4 +94,90 @@ describe('PocketCodeClient（S2c：传输层 + 指纹）', () => {
     );
     await expect(client.restoreTrash('t-id')).resolves.toBeUndefined();
   });
+
+  it('listTrash 请求 GET /v1/trash 并解析条目列表（S3c）', async () => {
+    const transport = vi.fn(async (_req: TransportRequest) =>
+      jsonResult(200, {
+        items: [
+          {
+            trash_id: '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+            project_id: 'pid',
+            original_path: 'old.py',
+            deleted_at: '2026-10-25T10:00:00Z',
+            kind: 'file',
+            size: 12,
+          },
+        ],
+      }),
+    );
+    const client = clientOf(transport as unknown as TransportFn);
+
+    const response = await client.listTrash();
+
+    expect(transport.mock.calls[0]?.[0]?.url).toBe('https://192.168.43.10:8765/v1/trash');
+    expect(response.items).toHaveLength(1);
+    expect(response.items[0]?.original_path).toBe('old.py');
+  });
+
+  it('createEntry 发送 POST /v1/projects/{id}/files（S3c）', async () => {
+    const transport = vi.fn(async (_req: TransportRequest) =>
+      jsonResult(201, { path: 'docs/笔记.md', type: 'file', manifest_revision: 3 }),
+    );
+    const client = clientOf(transport as unknown as TransportFn);
+
+    const response = await client.createEntry('pid', { path: 'docs/笔记.md', type: 'file' });
+
+    const req = transport.mock.calls[0]?.[0];
+    expect(req?.method).toBe('POST');
+    expect(req?.url).toBe('https://192.168.43.10:8765/v1/projects/pid/files');
+    expect(JSON.parse(req?.body ?? '{}')).toEqual({ path: 'docs/笔记.md', type: 'file' });
+    expect(response.manifest_revision).toBe(3);
+  });
+
+  it('trashEntries 发送批量路径（S3c）', async () => {
+    const transport = vi.fn(async (_req: TransportRequest) =>
+      jsonResult(200, { items: [{ path: 'a.txt', trash_id: 't1' }] }),
+    );
+    const client = clientOf(transport as unknown as TransportFn);
+
+    const response = await client.trashEntries('pid', { paths: ['a.txt', 'sub'] });
+
+    const req = transport.mock.calls[0]?.[0];
+    expect(req?.method).toBe('POST');
+    expect(req?.url).toBe('https://192.168.43.10:8765/v1/projects/pid/trash');
+    expect(JSON.parse(req?.body ?? '{}')).toEqual({ paths: ['a.txt', 'sub'] });
+    expect(response.items[0]?.trash_id).toBe('t1');
+  });
+
+  it('searchProject 对关键词做查询编码（S4b）', async () => {
+    const transport = vi.fn(async (_req: TransportRequest) =>
+      jsonResult(200, { query: 'serpapi', total_matches: 0, truncated: false, matches: [] }),
+    );
+    const client = clientOf(transport as unknown as TransportFn);
+
+    await client.searchProject('pid', 'serp api');
+
+    const req = transport.mock.calls[0]?.[0];
+    expect(req?.method).toBe('GET');
+    // URLSearchParams 把空格编码为 +（服务端按表单规则解码，等价 %20）
+    expect(req?.url).toBe('https://192.168.43.10:8765/v1/projects/pid/search?q=serp+api');
+  });
+
+  it('diagnose 发送未保存草稿文本（S4d）', async () => {
+    const transport = vi.fn(async (_req: TransportRequest) =>
+      jsonResult(200, { analyzer: 'ast', diagnostics: [] }),
+    );
+    const client = clientOf(transport as unknown as TransportFn);
+
+    const response = await client.diagnose('pid', {
+      path: 'draft.py',
+      content: 'x = 1\n',
+    });
+
+    const req = transport.mock.calls[0]?.[0];
+    expect(req?.method).toBe('POST');
+    expect(req?.url).toBe('https://192.168.43.10:8765/v1/projects/pid/diagnose');
+    expect(JSON.parse(req?.body ?? '{}')).toEqual({ path: 'draft.py', content: 'x = 1\n' });
+    expect(response.analyzer).toBe('ast');
+  });
 });

@@ -1,0 +1,19 @@
+{
+  "analyzer": "pyflakes+3.2",
+  "diagnostics": [
+    {
+      "line": 4,
+      "column": 12,
+      "severity": "error",
+      "code": "SyntaxError",
+      "message": "expected ':'"
+    },
+    {
+      "line": 9,
+      "column": 5,
+      "severity": "warning",
+      "code": "F821",
+      "message": "undefined name 'SERPAPI_KEY'"
+    }
+  ]
+}

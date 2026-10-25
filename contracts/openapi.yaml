@@ -298,6 +298,145 @@ paths:
         "409":
           $ref: '#/components/responses/AlreadyExists'
 
+  /v1/projects/{project_id}/search:
+    get:
+      operationId: searchProject
+      summary: 项目全文搜索（只读，按行匹配）
+      description: |
+        在授权项目内做**大小写不敏感的子串**全文搜索。扫描范围与 manifest
+        一致（排除依赖/构建产物/隐藏目录与密钥类文件），只搜可安全解码的
+        文本文件；二进制文件静默跳过。
+        服务端限额：最多扫描 3000 个文件、单文件最多 20 条匹配、总匹配
+        最多 200 条；触限时 `truncated: true`（结果不完整，客户端须如实提示）。
+      tags: [search]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          description: 搜索关键词（前后空白会被服务端去除；去空后为空返回 400）
+      responses:
+        "200":
+          description: 搜索结果（无匹配时 matches 为空数组且 truncated=false）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        "400":
+          $ref: '#/components/responses/InvalidRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/ProjectNotFound'
+
+  /v1/projects/{project_id}/git/status:
+    get:
+      operationId: gitStatus
+      summary: 项目 Git 状态（只读：分支 + 未提交修改清单）
+      description: |
+        在授权项目根目录运行只读 git 命令（status --porcelain）。项目不是
+        git 仓库或 git 不可用时返回 200 + `available: false` + 原因说明，
+        **不是错误**——很多目录不是仓库。不做任何写操作（PRD §9：首版
+        不做 push/rebase/force）。
+      tags: [git]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        "200":
+          description: Git 状态（available=false 表示无法读取）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitStatusResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/ProjectNotFound'
+
+  /v1/projects/{project_id}/git/diff:
+    get:
+      operationId: gitDiff
+      summary: 单个文件的未提交 Diff（只读，unified diff 文本）
+      description: |
+        返回 `git diff -- <path>`（staged=true 时 `git diff --cached -- <path>`）
+        的文本。上限 256 KiB，超出 `truncated: true`。未跟踪的新文件没有
+        diff 内容（返回空文本）。
+      tags: [git]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
+        - name: staged
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Diff 文本（可能为空）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitDiffResponse'
+        "400":
+          $ref: '#/components/responses/InvalidRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/ProjectNotFound'
+        "500":
+          description: git 命令失败（极少见；status 可用后才会请求 diff）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/projects/{project_id}/diagnose:
+    post:
+      operationId: diagnosePython
+      summary: 检查未保存的 Python 草稿文本（不写入电脑文件）
+      description: |
+        用电脑端 Python 检查**尚未保存**的手机草稿文本（PRD §7：不要求先写入
+        电脑文件）。`path` 仅作上下文（语言判断与日志），服务端不读盘。
+        能力如实上报：始终包含语法/缩进检查（标准库 ast，analyzer="ast"）；
+        电脑端安装了 pyflakes 时追加未定义名称/导入等静态检查
+        （analyzer="pyflakes+x.y"，未定义名称等为 warning）。
+        内容一律以 LF 表示（与 FileSaveRequest.content 约定一致）；上限 1 MiB。
+      tags: [diagnostics]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiagnoseRequest'
+      responses:
+        "200":
+          description: 检查完成（无问题则 diagnostics 为空数组）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnoseResponse'
+        "400":
+          $ref: '#/components/responses/InvalidRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/ProjectNotFound'
+        "413":
+          $ref: '#/components/responses/FileTooLarge'
+
   /v1/projects/{project_id}/trash:
     post:
       operationId: trashEntries
@@ -873,6 +1012,145 @@ components:
           format: uuid
         restored_path:
           $ref: '#/components/schemas/RelativePath'
+
+    SearchLineMatch:
+      type: object
+      additionalProperties: false
+      required: [line, text]
+      properties:
+        line:
+          type: integer
+          minimum: 1
+          description: 1-based 行号
+        text:
+          type: string
+          description: 该行内容（保留原始缩进，不含换行符）
+
+    SearchFileMatches:
+      type: object
+      additionalProperties: false
+      required: [path, lines]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchLineMatch'
+
+    SearchResponse:
+      type: object
+      additionalProperties: false
+      required: [query, total_matches, truncated, matches]
+      properties:
+        query:
+          type: string
+          description: 实际用于匹配的关键词（去除首尾空白后）
+        total_matches:
+          type: integer
+          minimum: 0
+        truncated:
+          type: boolean
+          description: 触及扫描/匹配限额时为 true，结果不完整
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchFileMatches'
+
+    DiagnoseRequest:
+      type: object
+      additionalProperties: false
+      required: [path, content]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+          description: 草稿对应的目标文件路径（仅上下文，不读盘）
+        content:
+          type: string
+          description: 草稿文本（LF 换行）
+
+    Diagnostic:
+      type: object
+      additionalProperties: false
+      required: [line, column, severity, code, message]
+      properties:
+        line:
+          type: integer
+          minimum: 1
+          description: 1-based 行号
+        column:
+          type: integer
+          minimum: 1
+          description: 1-based 列号
+        severity:
+          type: string
+          enum: [error, warning]
+        code:
+          type: string
+          description: 如 SyntaxError / F821（pyflakes 未定义名称）
+        message:
+          type: string
+
+    DiagnoseResponse:
+      type: object
+      additionalProperties: false
+      required: [analyzer, diagnostics]
+      properties:
+        analyzer:
+          type: string
+          description: 实际使用的分析器，如 "ast" 或 "pyflakes+3.2"；能力差异如实上报
+        diagnostics:
+          type: array
+          items:
+            $ref: '#/components/schemas/Diagnostic'
+
+    GitFileStatus:
+      type: object
+      additionalProperties: false
+      required: [path, index_status, worktree_status]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        index_status:
+          type: string
+          enum: [none, added, modified, deleted, renamed, copied, typechange, conflicted]
+          description: 暂存区状态（git status 第一列）
+        worktree_status:
+          type: string
+          enum: [none, added, modified, deleted, renamed, copied, typechange, untracked, conflicted]
+          description: 工作区状态（git status 第二列；?? → untracked）
+
+    GitStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [available, changes]
+      properties:
+        available:
+          type: boolean
+        reason:
+          type: string
+          description: available=false 时的原因（不是 git 仓库 / git 未安装）
+        branch:
+          type: string
+          description: 当前分支名；detached HEAD 时为 "HEAD (detached)"
+        changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GitFileStatus'
+
+    GitDiffResponse:
+      type: object
+      additionalProperties: false
+      required: [path, diff, truncated]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        diff:
+          type: string
+          description: unified diff 文本；无差异/未跟踪文件时为空字符串
+        truncated:
+          type: boolean
+          description: 超过 256 KiB 被截断时为 true
 
     ErrorCode:
       type: string

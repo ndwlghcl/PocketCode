@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
+import type { TrashEntry } from '../../api/types';
+import { PocketCodeClient, PocketCodeError } from '../../api/client';
 import { normalizeBaseUrl, probeHealth, type ProbeResult } from '../../api/probe';
 import { openAppSettings } from '../../native';
 import { APP_BUILD } from '../../app/version';
@@ -7,6 +9,7 @@ import type { Connection, PairAttempt } from '../../app/useConnection';
 
 interface Props {
   connection: Connection;
+  client: PocketCodeClient | null;
 }
 
 function describeProbe(probe: ProbeResult): { ok: boolean; title: string; hint?: string } {
@@ -44,8 +47,9 @@ function describePairAttempt(attempt: PairAttempt): { ok: boolean; text: string 
   return { ok: attempt.ok, text: attempt.message };
 }
 
-/** S2 连接页：扫码配对 + 手动地址诊断（health，不带凭据）。 */
-export function ConnectionScreen({ connection }: Props) {
+/** S2 连接页：扫码配对 + 手动地址诊断（health，不带凭据）。
+ *  S3c 增补：回收区列表与恢复（跨项目的电脑端回收区放在全局连接页）。 */
+export function ConnectionScreen({ connection, client }: Props) {
   const { pairing, lastProbe, busy, scanning, status, refresh, pairFromQr, unpair } =
     connection;
   const [input, setInput] = useState(pairing?.baseUrl ?? '');
@@ -53,6 +57,78 @@ export function ConnectionScreen({ connection }: Props) {
   const [probeBusy, setProbeBusy] = useState(false);
   const [manualProbe, setManualProbe] = useState<ProbeResult | null>(null);
   const [pairAttempt, setPairAttempt] = useState<PairAttempt | null>(null);
+  const [trashItems, setTrashItems] = useState<TrashEntry[] | null>(null);
+  const [trashBusy, setTrashBusy] = useState(false);
+  const [trashMessage, setTrashMessage] = useState<string | null>(null);
+  const [trashError, setTrashError] = useState(false);
+
+  const online = status.state === 'online';
+
+  const loadTrash = useCallback(async () => {
+    if (!client) return;
+    setTrashBusy(true);
+    try {
+      const response = await client.listTrash();
+      setTrashItems(response.items);
+      setTrashMessage(null);
+      setTrashError(false);
+    } catch (cause) {
+      setTrashItems(null);
+      setTrashMessage(
+        cause instanceof PocketCodeError ? cause.message : '无法读取回收区',
+      );
+      setTrashError(true);
+    } finally {
+      setTrashBusy(false);
+    }
+  }, [client]);
+
+  // 进入连接页且已配对时加载一次回收区。
+  // 注意：useConnection 每 15 秒 refresh 都会换新的 pairing/client 对象，
+  // 不能直接依赖它们，否则回收区每 15 秒重拉并冲掉操作提示——这里按
+  // 「服务器地址」节流，更新靠手动「刷新回收区」按钮。
+  const trashLoadedFor = useRef<string | null>(null);
+  useEffect(() => {
+    const baseUrl = pairing?.baseUrl ?? null;
+    if (baseUrl && trashLoadedFor.current !== baseUrl) {
+      trashLoadedFor.current = baseUrl;
+      void loadTrash();
+    }
+  }, [pairing, loadTrash]);
+
+  const restoreTrashEntry = async (entry: TrashEntry) => {
+    if (!client || trashBusy) return;
+    if (
+      !window.confirm(
+        `把「${entry.original_path}」恢复到电脑上的原位置？\n若原位置已被占用，将不会覆盖。`,
+      )
+    ) {
+      return;
+    }
+    setTrashBusy(true);
+    setTrashMessage(null);
+    try {
+      const result = await client.restoreTrash(entry.trash_id);
+      await loadTrash(); // 先刷新列表（内部会清消息），再写成功提示
+      setTrashMessage(`已恢复到 ${result.restored_path}`);
+      setTrashError(false);
+    } catch (cause) {
+      if (cause instanceof PocketCodeError && cause.code === 'ALREADY_EXISTS') {
+        setTrashMessage(
+          `原位置已被占用，未恢复（电脑上已有 ${entry.original_path}）。` +
+            '请先在电脑上处理同名文件，再回到这里重试。',
+        );
+        setTrashError(true);
+      } else {
+        setTrashMessage(
+          cause instanceof PocketCodeError ? cause.message : '恢复失败',
+        );
+        setTrashError(true);
+      }
+    } finally {
+      setTrashBusy(false);
+    }
+  };
 
   const onScanPair = async () => {
     setPairAttempt(null);
@@ -144,6 +220,57 @@ export function ConnectionScreen({ connection }: Props) {
           <p className="hint">
             取消配对后需要重新扫码；电脑端也可以撤销本手机的授权。
           </p>
+
+          <h2 className="screen__subtitle">电脑回收区</h2>
+          <p className="hint">
+            目录页删除的文件/文件夹会进入电脑的回收区，可在这里跨会话恢复。
+          </p>
+          {trashMessage ? (
+            <div className={`result ${trashError ? 'result--bad' : 'result--ok'}`}>
+              <p className="result__title">{trashError ? '✘ ' : '✔ '}{trashMessage}</p>
+            </div>
+          ) : null}
+          {trashItems === null ? (
+            <p className="hint">{trashBusy ? '正在读取回收区…' : ''}</p>
+          ) : trashItems.length === 0 ? (
+            <p className="empty">回收区是空的。</p>
+          ) : (
+            <ul className="cardlist">
+              {trashItems.map((entry) => (
+                <li key={entry.trash_id}>
+                  <div className="cardlist__item cardlist__item--static trashitem">
+                    <div className="trashitem__info">
+                      <span className="trashitem__path">{entry.original_path}</span>
+                      <span className="cardlist__meta">
+                        {entry.kind === 'dir' ? '文件夹' : '文件'}
+                        {typeof entry.size === 'number' ? ` · ${entry.size} 字节` : ''}
+                        {` · ${entry.deleted_at.slice(0, 19).replace('T', ' ')}`}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="trashitem__restore"
+                      onClick={() => void restoreTrashEntry(entry)}
+                      disabled={!online || trashBusy}
+                    >
+                      恢复
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="btnrow">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void loadTrash()}
+              disabled={!online || trashBusy}
+            >
+              {trashBusy ? '正在刷新…' : '刷新回收区'}
+            </button>
+          </div>
+          {!online ? <p className="hint">离线时无法读取/恢复回收区，联网后再试。</p> : null}
         </>
       ) : (
         <>

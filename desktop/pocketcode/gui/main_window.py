@@ -15,6 +15,7 @@ import urllib.request
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -60,7 +61,7 @@ class MainWindow(QMainWindow):
         self.allow_close = False
 
         self.setWindowTitle("PocketCode 管理窗口")
-        self.resize(520, 720)
+        self.resize(560, 840)
         self._build_ui()
 
         controller.add_listener(self._bridge.service_state_changed.emit)
@@ -89,6 +90,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_connection_group())
         layout.addWidget(self._build_projects_group())
         layout.addWidget(self._build_devices_group())
+        layout.addWidget(self._build_snapshots_group())
         layout.addWidget(self._build_settings_group())
         layout.addWidget(self._build_diagnostics_group())
         layout.addStretch(1)
@@ -149,6 +151,55 @@ class MainWindow(QMainWindow):
         buttons.addWidget(revoke_btn)
         layout.addLayout(buttons)
         self._refresh_device_list()
+        return group
+
+    def _build_snapshots_group(self) -> QGroupBox:
+        """历史版本（S3 收尾）：选项目 → 选文件 → 选快照 → 恢复。
+
+        手机保存冲突覆盖、电脑端写入前的旧内容都在快照区，这里只做查看/恢复，
+        不做代码编辑（PRD §3.1）。列表高度收紧，避免挤压其他区块。
+        """
+        group = QGroupBox("历史版本（覆盖前快照）")
+        layout = QVBoxLayout(group)
+
+        selector_row = QHBoxLayout()
+        self._snapshot_project_combo = QComboBox()
+        self._snapshot_project_combo.setMinimumWidth(220)
+        reload_btn = QPushButton("刷新")
+        reload_btn.setToolTip("重新扫描快照区（每次手机/电脑保存都会产生新快照）")
+        reload_btn.clicked.connect(self._refresh_snapshot_projects)
+        selector_row.addWidget(QLabel("项目："))
+        selector_row.addWidget(self._snapshot_project_combo, 1)
+        selector_row.addWidget(reload_btn)
+        layout.addLayout(selector_row)
+
+        self._snapshot_file_list = QListWidget()
+        self._snapshot_file_list.setMaximumHeight(96)
+        self._snapshot_file_list.setToolTip("该项目下有过覆盖保存的文件")
+        layout.addWidget(self._snapshot_file_list)
+
+        self._snapshot_version_list = QListWidget()
+        self._snapshot_version_list.setMaximumHeight(96)
+        self._snapshot_version_list.setToolTip("所选文件的历史快照（新→旧，每文件最多 20 份）")
+        layout.addWidget(self._snapshot_version_list)
+
+        restore_btn = QPushButton("恢复所选快照到原文件")
+        restore_btn.clicked.connect(self._on_restore_snapshot)
+        layout.addWidget(restore_btn)
+
+        self._snapshot_hint = QLabel(
+            "手机保存冲突后覆盖电脑文件时，被覆盖的电脑内容会自动存为快照，可在这里恢复。"
+        )
+        self._snapshot_hint.setWordWrap(True)
+        layout.addWidget(self._snapshot_hint)
+
+        self._snapshot_project_combo.currentIndexChanged.connect(
+            self._on_snapshot_project_changed
+        )
+        self._snapshot_file_list.currentItemChanged.connect(
+            self._on_snapshot_file_changed
+        )
+        self._refresh_snapshot_projects()
         return group
 
     def _build_settings_group(self) -> QGroupBox:
@@ -260,6 +311,86 @@ class MainWindow(QMainWindow):
         code = self._controller.pairing.create_session()
         payload = self._controller.pairing_qr_payload(code)
         PairingQrDialog(payload, code, parent=self).exec()
+
+    # -------------------------------------------------------------- 历史版本
+    def _refresh_snapshot_projects(self) -> None:
+        self._snapshot_project_combo.blockSignals(True)
+        self._snapshot_project_combo.clear()
+        projects = self._controller.snapshot_projects()
+        for project in projects:
+            self._snapshot_project_combo.addItem(
+                f"{project['name']}（{project['file_count']} 个文件）", project["id"]
+            )
+        if not projects:
+            self._snapshot_project_combo.addItem("（还没有任何快照）", "")
+        self._snapshot_project_combo.blockSignals(False)
+        self._on_snapshot_project_changed()
+
+    def _on_snapshot_project_changed(self) -> None:
+        self._snapshot_file_list.clear()
+        self._snapshot_version_list.clear()
+        project_id = self._snapshot_project_combo.currentData()
+        if not project_id:
+            self._snapshot_hint.setText(
+                "还没有快照。手机保存/电脑覆盖后这里会自动出现可恢复的历史版本。"
+            )
+            return
+        for entry in self._controller.snapshot_files(project_id):
+            item = QListWidgetItem(
+                f"{entry['path']}（{entry['count']} 份，最近 {entry['latest']}）"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, entry["path"])
+            self._snapshot_file_list.addItem(item)
+
+    def _on_snapshot_file_changed(self) -> None:
+        self._snapshot_version_list.clear()
+        project_id = self._snapshot_project_combo.currentData()
+        item = self._snapshot_file_list.currentItem()
+        if not project_id or item is None:
+            return
+        relative_path = item.data(Qt.ItemDataRole.UserRole)
+        for snapshot in self._controller.file_snapshots(project_id, relative_path):
+            version_item = QListWidgetItem(
+                f"{snapshot['saved_at']}　{snapshot['size']} 字节"
+            )
+            version_item.setData(Qt.ItemDataRole.UserRole, snapshot["snapshot_file"])
+            self._snapshot_version_list.addItem(version_item)
+
+    def _on_restore_snapshot(self) -> None:
+        project_id = self._snapshot_project_combo.currentData()
+        file_item = self._snapshot_file_list.currentItem()
+        version_item = self._snapshot_version_list.currentItem()
+        if not project_id or file_item is None or version_item is None:
+            QMessageBox.information(
+                self, "恢复快照", "请先选择项目、文件，再选择要恢复的快照。"
+            )
+            return
+        relative_path = file_item.data(Qt.ItemDataRole.UserRole)
+        confirm = QMessageBox.question(
+            self,
+            "恢复快照",
+            f"把「{relative_path}」恢复到所选快照的内容？\n"
+            "当前文件内容会先自动存为新快照，恢复本身可以再撤销。",
+        )
+        if confirm is not QMessageBox.StandardButton.Yes:
+            return
+        self._restore_snapshot_confirmed(project_id, relative_path, version_item)
+
+    def _restore_snapshot_confirmed(
+        self, project_id: str, relative_path: str, version_item: QListWidgetItem
+    ) -> None:
+        try:
+            self._controller.restore_file_snapshot(
+                project_id, relative_path, version_item.data(Qt.ItemDataRole.UserRole)
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "恢复失败", str(exc))
+            return
+        # 恢复产生了一份新快照（恢复前的那份），刷新快照列表并给出结果提示
+        self._on_snapshot_file_changed()
+        self._snapshot_hint.setText(
+            f"✔ 已把「{relative_path}」恢复为所选快照的内容（恢复前的内容已另存新快照）。"
+        )
 
     # -------------------------------------------------------------- 动作
     def _on_apply_settings(self) -> None:

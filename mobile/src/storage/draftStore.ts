@@ -134,11 +134,92 @@ export async function removeDraft(
   return next;
 }
 
-/** 保存成功后清空该文件全部草稿（内容已与电脑一致）。 */
+/** 重命名一份草稿（S4a：内容与活动态都不变，只改名字）。 */
+export async function renameDraft(
+  projectId: string,
+  path: string,
+  id: string,
+  name: string,
+  storage: KVStorage = diskStorage,
+): Promise<StoredDrafts | null> {
+  const stored = await loadDrafts(projectId, path, storage);
+  const target = stored.drafts.find((draft) => draft.id === id);
+  if (!target) return null;
+  const trimmed = name.trim();
+  if (!trimmed) return stored;
+  const next: StoredDrafts = {
+    ...stored,
+    drafts: stored.drafts.map((draft) =>
+      draft.id === id ? { ...draft, name: trimmed, savedAt: new Date().toISOString() } : draft,
+    ),
+  };
+  await saveDrafts(projectId, path, next, storage);
+  return next;
+}
+
+/** 保存成功后不再清空草稿（S4a2 用户反馈：草稿是修改版本/灵感的记录，
+ *  由用户手动管理）；本函数保留给「单文件彻底清除」场景。 */
 export async function clearDrafts(
   projectId: string,
   path: string,
   storage: KVStorage = diskStorage,
 ): Promise<void> {
   await storage.remove(storageKey(projectId, path));
+}
+
+// ---------------------------------------------------------------- 草稿箱（S4a2）
+
+export interface DraftListItem {
+  projectId: string;
+  path: string;
+  draft: FileDraft;
+}
+
+function parseStorageKey(key: string): { projectId: string; path: string } | null {
+  if (!key.startsWith(DRAFT_PREFIX)) return null;
+  const rest = key.slice(DRAFT_PREFIX.length);
+  const dot = rest.indexOf('.');
+  if (dot <= 0) return null;
+  try {
+    return {
+      projectId: rest.slice(0, dot),
+      path: decodeURIComponent(rest.slice(dot + 1)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** 跨文件列出全部草稿（按保存时间新→旧）；损坏的条目跳过。 */
+export async function listAllDrafts(
+  storage: KVStorage = diskStorage,
+): Promise<DraftListItem[]> {
+  try {
+    const keys = await storage.keys(DRAFT_PREFIX);
+    const items: DraftListItem[] = [];
+    for (const key of keys) {
+      const parsed = parseStorageKey(key);
+      if (!parsed) continue;
+      const stored = await loadDrafts(parsed.projectId, parsed.path, storage);
+      for (const draft of stored.drafts) {
+        items.push({ projectId: parsed.projectId, path: parsed.path, draft });
+      }
+    }
+    return items.sort((a, b) => b.draft.savedAt.localeCompare(a.draft.savedAt));
+  } catch {
+    return [];
+  }
+}
+
+/** 清空全部草稿（草稿箱「清空」入口，必须由用户确认后调用）；返回清理的文件数。 */
+export async function clearAllDrafts(storage: KVStorage = diskStorage): Promise<number> {
+  try {
+    const keys = await storage.keys(DRAFT_PREFIX);
+    for (const key of keys) {
+      await storage.remove(key);
+    }
+    return keys.length;
+  } catch {
+    return 0;
+  }
 }

@@ -8,17 +8,28 @@ import { ExplorerScreen } from '../features/explorer/ExplorerScreen';
 import { FileScreen } from '../features/explorer/FileScreen';
 import { ProjectListScreen } from '../features/projects/ProjectListScreen';
 import { ConnectionScreen } from '../features/settings/ConnectionScreen';
+import { DraftsScreen } from '../features/drafts/DraftsScreen';
+import { SearchScreen } from '../features/search/SearchScreen';
+import { GitScreen } from '../features/git/GitScreen';
+import { ShareScreen } from '../features/sharing/ShareScreen';
 import { useConnection } from './useConnection';
 
 type Screen =
   | { name: 'projects' }
-  | { name: 'explorer'; project: ProjectSummary };
+  | { name: 'explorer'; project: ProjectSummary }
+  | { name: 'search'; project: ProjectSummary }
+  | { name: 'git'; project: ProjectSummary }
+  | { name: 'share'; project: ProjectSummary };
+
+type HomeTab = 'projects' | 'drafts';
 
 interface Viewer {
   project: ProjectSummary;
   data: FileContentResponse;
   fromCache?: boolean;
   cachedAt?: string;
+  /** 搜索结果定位：打开后跳到的行（1-based）。 */
+  line?: number;
 }
 
 function statusView(connection: ReturnType<typeof useConnection>): {
@@ -54,6 +65,9 @@ export function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'projects' });
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [showConnection, setShowConnection] = useState(false);
+  const [homeTab, setHomeTab] = useState<HomeTab>('projects');
+  /** 文件页全屏阅读时为 true：隐藏状态栏与页边距，编辑器占满全屏。 */
+  const [immersive, setImmersive] = useState(false);
   const viewerBackGuard = useRef<(() => boolean) | null>(null);
   const { dot, text } = statusView(connection);
 
@@ -84,6 +98,10 @@ export function App() {
         setShowConnection(false);
       } else if (screen.name === 'explorer') {
         setScreen({ name: 'projects' });
+      } else if (screen.name === 'search' || screen.name === 'git' || screen.name === 'share') {
+        setScreen({ name: 'explorer', project: screen.project });
+      } else if (homeTab === 'drafts') {
+        setHomeTab('projects');
       } else {
         void CapApp.exitApp();
       }
@@ -91,13 +109,24 @@ export function App() {
     return () => {
       void handlePromise.then((handle) => handle.remove());
     };
-  }, [viewer, showConnection, screen.name]);
+  }, [viewer, showConnection, screen.name, homeTab]);
 
   const connectionOpen = showConnection;
+  const atHome = !connectionOpen && !viewer && screen.name === 'projects';
+
+  const openDraftFromBox = (
+    project: ProjectSummary,
+    data: FileContentResponse,
+    meta?: { fromCache?: boolean; cachedAt?: string },
+  ) => {
+    setHomeTab('projects');
+    setScreen({ name: 'explorer', project });
+    setViewer({ project, data, fromCache: meta?.fromCache, cachedAt: meta?.cachedAt });
+  };
 
   return (
     <div className="app">
-      <header className="statusbar">
+      <header className={`statusbar ${immersive ? 'statusbar--hidden' : ''}`}>
         <span className={`statusbar__dot statusbar__dot--${dot}`} />
         <span className="statusbar__text">{text}</span>
         <button
@@ -108,9 +137,9 @@ export function App() {
           {connectionOpen ? '‹ 返回' : '⚙ 连接'}
         </button>
       </header>
-      <main className="screen">
+      <main className={`screen ${immersive ? 'screen--immersive' : ''}`}>
         {connectionOpen ? (
-          <ConnectionScreen connection={connection} />
+          <ConnectionScreen connection={connection} client={client} />
         ) : viewer ? (
           <FileScreen
             client={client}
@@ -124,6 +153,60 @@ export function App() {
             registerBackGuard={(guard) => {
               viewerBackGuard.current = guard;
             }}
+            onImmersiveChange={setImmersive}
+            initialLine={viewer.line}
+          />
+        ) : screen.name === 'explorer' ? (
+          <ExplorerScreen
+            client={client}
+            project={screen.project}
+            online={online}
+            revoked={revoked}
+            onBack={() => setScreen({ name: 'projects' })}
+            onOpenSearch={() => setScreen({ name: 'search', project: screen.project })}
+            onOpenGit={() => setScreen({ name: 'git', project: screen.project })}
+            onOpenShare={() => setScreen({ name: 'share', project: screen.project })}
+            onOpenFile={(data, meta) =>
+              setViewer({
+                project: screen.project,
+                data,
+                fromCache: meta?.fromCache,
+                cachedAt: meta?.cachedAt,
+              })
+            }
+          />
+        ) : screen.name === 'search' ? (
+          <SearchScreen
+            client={client}
+            project={screen.project}
+            online={online}
+            revoked={revoked}
+            onBack={() => setScreen({ name: 'explorer', project: screen.project })}
+            onOpenFile={(data, meta, line) =>
+              setViewer({
+                project: screen.project,
+                data,
+                fromCache: meta?.fromCache,
+                cachedAt: meta?.cachedAt,
+                line,
+              })
+            }
+          />
+        ) : screen.name === 'git' ? (
+          <GitScreen
+            client={client}
+            project={screen.project}
+            online={online}
+            revoked={revoked}
+            onBack={() => setScreen({ name: 'explorer', project: screen.project })}
+          />
+        ) : screen.name === 'share' ? (
+          <ShareScreen
+            client={client}
+            project={screen.project}
+            online={online}
+            revoked={revoked}
+            onBack={() => setScreen({ name: 'explorer', project: screen.project })}
           />
         ) : screen.name === 'projects' ? (
           revoked ? (
@@ -146,6 +229,8 @@ export function App() {
                 </button>
               </div>
             </section>
+          ) : homeTab === 'drafts' ? (
+            <DraftsScreen client={client} online={online} onOpenDraft={openDraftFromBox} />
           ) : (
             <ProjectListScreen
               client={client}
@@ -154,24 +239,27 @@ export function App() {
               onOpenProject={(project) => setScreen({ name: 'explorer', project })}
             />
           )
-        ) : (
-          <ExplorerScreen
-            client={client}
-            project={screen.project}
-            online={online}
-            revoked={revoked}
-            onBack={() => setScreen({ name: 'projects' })}
-            onOpenFile={(data, meta) =>
-              setViewer({
-                project: screen.project,
-                data,
-                fromCache: meta?.fromCache,
-                cachedAt: meta?.cachedAt,
-              })
-            }
-          />
-        )}
+        ) : null}
       </main>
+      {/* 底部导航只在首页（项目/草稿箱）出现；进项目/文件后消失（用户要求，避免占空间） */}
+      {atHome && !revoked ? (
+        <nav className="bottomnav">
+          <button
+            type="button"
+            className={`bottomnav__btn ${homeTab === 'projects' ? 'bottomnav__btn--active' : ''}`}
+            onClick={() => setHomeTab('projects')}
+          >
+            项目
+          </button>
+          <button
+            type="button"
+            className={`bottomnav__btn ${homeTab === 'drafts' ? 'bottomnav__btn--active' : ''}`}
+            onClick={() => setHomeTab('drafts')}
+          >
+            草稿箱
+          </button>
+        </nav>
+      ) : null}
     </div>
   );
 }

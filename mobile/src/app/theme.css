@@ -8,6 +8,20 @@
   --accent: #2d7dff;
   --border: #e4e6eb;
   --offline: #d97706;
+  /* 语法高亮（浅色，GitHub Light 风格） */
+  --tok-keyword: #cf222e;
+  --tok-string: #0a3069;
+  --tok-number: #0550ae;
+  --tok-comment: #6e7781;
+  --tok-def: #953800;
+  --tok-func: #8250df;
+  --tok-class: #953800;
+  --tok-type: #0550ae;
+  --tok-prop: #0550ae;
+  --tok-var: #1c1e21;
+  --tok-op: #57606a;
+  --tok-punc: #57606a;
+  --tok-selection: rgba(45, 125, 255, 0.18);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -18,6 +32,20 @@
     --text-dim: #9aa0a6;
     --border: #2c3036;
     --offline: #f59e0b;
+    /* 语法高亮（深色，GitHub Dark 风格） */
+    --tok-keyword: #ff7b72;
+    --tok-string: #a5d6ff;
+    --tok-number: #79c0ff;
+    --tok-comment: #8b949e;
+    --tok-def: #ffa657;
+    --tok-func: #d2a8ff;
+    --tok-class: #ffa657;
+    --tok-type: #79c0ff;
+    --tok-prop: #79c0ff;
+    --tok-var: #e6edf3;
+    --tok-op: #8b949e;
+    --tok-punc: #8b949e;
+    --tok-selection: rgba(45, 125, 255, 0.32);
   }
 }
 
@@ -116,6 +144,94 @@ body {
   overflow-y: auto;
   tab-size: 4;
 }
+
+/* S4a：CodeMirror 宿主。滚动发生在组件内部 scroller（阅读位置记忆依赖这一点）。
+   高度 = 视口减去紧凑头部（状态栏+两行标题+按钮行）。 */
+.cmhost {
+  height: calc(100vh - 280px);
+  min-height: 240px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--card);
+}
+
+/* 编辑模式下方还有草稿栏/状态行/保存按钮，留更多空间给它们 */
+.cmhost--edit {
+  height: calc(100vh - 420px);
+  min-height: 200px;
+}
+
+/* 全屏阅读：占满整个视口（状态栏已由根布局隐藏），去边框 */
+.cmhost--full {
+  height: calc(100dvh - env(safe-area-inset-top));
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+}
+
+.cmhost .cm-editor {
+  height: 100%;
+  background: var(--card);
+  color: var(--text);
+}
+
+.cmhost .cm-scroller {
+  font-family: "Cascadia Mono", Consolas, "JetBrains Mono", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow: auto;
+  tab-size: 4;
+}
+
+.cmhost .cm-content {
+  padding: 10px 0 40vh; /* 底部留白：末行也能滚到视口上部，方便躺着读 */
+  caret-color: var(--accent);
+}
+
+.cmhost .cm-line {
+  padding: 0 12px;
+}
+
+.cmhost .cm-gutters {
+  background: var(--card);
+  color: var(--text-dim);
+  border: none;
+  border-right: 1px solid var(--border);
+  padding-left: 4px;
+}
+
+.cmhost .cm-activeLine {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.cmhost .cm-activeLineGutter {
+  background: transparent;
+  color: var(--text);
+}
+
+.cmhost .cm-selectionBackground,
+.cmhost .cm-content ::selection {
+  background: var(--tok-selection) !important;
+}
+
+.cmhost .cm-cursor {
+  border-left-color: var(--accent);
+}
+
+/* 语法高亮 token（映射见 CodeEditor.tsx 的 HighlightStyle） */
+.tok-keyword { color: var(--tok-keyword); }
+.tok-string { color: var(--tok-string); }
+.tok-number { color: var(--tok-number); }
+.tok-comment { color: var(--tok-comment); font-style: italic; }
+.tok-def { color: var(--tok-def); }
+.tok-func { color: var(--tok-func); }
+.tok-class { color: var(--tok-class); }
+.tok-type { color: var(--tok-type); }
+.tok-prop { color: var(--tok-prop); }
+.tok-var { color: var(--tok-var); }
+.tok-op { color: var(--tok-op); }
+.tok-punc { color: var(--tok-punc); }
 
 /* 编辑模式的 textarea：默认只有 2 行高，必须显式撑满剩余空间；
    resize 手柄关闭（用户不需要拖拽调整）。 */
@@ -239,6 +355,40 @@ body {
   margin: 4px 0 16px;
 }
 
+.screen__subtitle {
+  font-size: 17px;
+  margin: 24px 0 4px;
+}
+
+/* S3c 回收区条目：路径 + 元信息 + 恢复按钮 */
+.trashitem {
+  gap: 10px;
+}
+
+.trashitem__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.trashitem__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trashitem__restore {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--accent);
+  border-radius: 8px;
+  font-size: 13px;
+  padding: 8px 12px;
+}
+
 .empty {
   color: var(--text-dim);
   background: var(--card);
@@ -285,7 +435,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .navrow__back {
@@ -294,11 +444,568 @@ body {
   color: var(--accent);
   font-size: 16px;
   padding: 6px 4px;
+  flex: none;
+}
+
+/* S4a2：标题 + 元信息两行堆叠，替代原先单独占一行的 hint */
+.navrow__stack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .navrow__title {
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navrow__meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navrow__action {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--accent);
+  border-radius: 8px;
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+/* S4a2 底部导航：只在首页（项目/草稿箱）出现，进项目后隐藏 */
+.bottomnav {
+  display: flex;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.bottomnav__btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 12px 0;
+}
+
+.bottomnav__btn--active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* S4a2 全屏阅读：状态栏隐藏（.statusbar--hidden），页边距归零 */
+.statusbar--hidden {
+  display: none;
+}
+
+.screen--immersive {
+  padding: 0;
+  max-width: none;
+}
+
+.immersive-wrap {
+  position: relative;
+  padding-top: env(safe-area-inset-top);
+}
+
+.immersive-bar {
+  position: absolute;
+  top: env(safe-area-inset-top);
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--border);
+}
+
+.immersive-bar__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.immersive-bar__btn {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--accent);
+  border-radius: 8px;
+  font-size: 13px;
+  padding: 7px 9px;
+}
+
+.immersive-bar__btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* 全屏编辑：顶栏常驻（光标点击不能用来呼出菜单），编辑器弹性占满剩余空间 */
+.immersive-edit {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+}
+
+.immersive-bar--flow {
+  position: static;
+  background: var(--card);
+  flex-wrap: wrap;
+}
+
+.immersive-bar__select {
+  flex: 1;
+  min-width: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 7px 8px;
+}
+
+.immersive-bar__state {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.immersive-hint {
+  margin: 6px 16px;
+}
+
+.cmhost--editfull {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  border: none;
+  border-radius: 0;
+}
+
+/* 普通编辑模式的草稿栏（S3 起一直缺样式，S4a2 补齐） */
+.editbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.editbar__select {
+  flex: 1;
+  min-width: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  padding: 9px 10px;
+}
+
+.editbar__btn {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 8px;
+  font-size: 13px;
+  padding: 9px 10px;
+}
+
+.immersive-message {
+  margin: 10px 16px;
+}
+
+/* S4a2 草稿箱卡片 */
+.draftcard {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.draftcard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.draftcard__name {
+  font-size: 16px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draftcard__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 2px 0 0;
+}
+
+.draftcard__row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.draftcard__action {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--accent);
+  border-radius: 8px;
+  font-size: 13px;
+  padding: 7px 12px;
+}
+
+.draftcard__action--primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.draftcard__action--danger {
+  color: #dc2626;
+}
+
+.draftcard__preview {
+  height: 220px;
+  min-height: 120px;
+  margin-top: 10px;
+}
+
+/* S4b 搜索结果：文件块 + 可点击的命中行 */
+.searchfile {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.searchfile__path {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.searchfile__lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.searchfile__line {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, "JetBrains Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 5px 4px;
+  text-align: left;
+  border-radius: 6px;
+}
+
+.searchfile__line:active {
+  background: var(--tok-selection);
+}
+
+.searchfile__lineno {
+  flex: none;
+  width: 36px;
+  text-align: right;
+  color: var(--text-dim);
+}
+
+.searchfile__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* S4c 底部抽屉（大纲/符号操作/诊断列表） */
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 40;
+}
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--card);
+  border-radius: 16px 16px 0 0;
+  border-top: 1px solid var(--border);
+  padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
+  max-height: 62vh;
+  overflow-y: auto;
+  z-index: 41;
+}
+
+.sheet__handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  margin: 4px auto 10px;
+}
+
+.sheet__title {
+  margin: 0 0 8px;
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.sheet__empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.sheet__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sheet__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  padding: 10px 8px;
+  text-align: left;
+  border-radius: 8px;
+}
+
+.sheet__item:active {
+  background: var(--tok-selection);
+}
+
+.sheet__kind {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  color: var(--accent);
+}
+
+.sheet__kind--class {
+  color: var(--tok-class);
+}
+
+.sheet__kind--function,
+.sheet__kind--method {
+  color: var(--tok-func);
+}
+
+.sheet__kind--heading {
+  color: var(--tok-def);
+}
+
+.sheet__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet__name--code {
+  font-family: "Cascadia Mono", Consolas, "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.sheet__lineno {
+  flex: none;
+  color: var(--text-dim);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+/* S4c 跳转后返回原位置 */
+.return-pill {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  z-index: 30;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--accent);
+  border-radius: 999px;
+  font-size: 13px;
+  padding: 10px 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+
+/* S4d 诊断波浪线（PRD §7：红=错误，黄=警告） */
+.diagnostic-error {
+  text-decoration: underline wavy #dc2626;
+  text-decoration-skip-ink: none;
+}
+
+.diagnostic-warning {
+  text-decoration: underline wavy #d97706;
+  text-decoration-skip-ink: none;
+}
+
+.diag-icon-error {
+  color: #dc2626;
+}
+
+.diag-icon-warning {
+  color: #d97706;
+}
+
+/* S4e Git 页：变更行 + 颜色化 Diff */
+.gititem {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.gititem__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.gititem__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.gititem__badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.gititem__badge {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 3px 8px;
+  color: var(--text-dim);
+}
+
+.gititem__badge--staged {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.gititem__badge--untracked {
+  color: var(--offline);
+  border-color: var(--offline);
+}
+
+.gititem__chevron {
+  color: var(--text-dim);
+}
+
+.gititem__diffwrap {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+}
+
+.diffview {
+  margin: 0;
+  font-family: "Cascadia Mono", Consolas, "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 46vh;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.diff-add {
+  color: #16a34a;
+  background: color-mix(in srgb, #16a34a 10%, transparent);
+  display: block;
+}
+
+.diff-del {
+  color: #dc2626;
+  background: color-mix(in srgb, #dc2626 10%, transparent);
+  display: block;
+}
+
+.diff-hunk {
+  color: var(--accent);
+  display: block;
+}
+
+/* S4f 片段分享浮标（比返回浮标更高一层） */
+.return-pill--raised {
+  bottom: calc(84px + env(safe-area-inset-bottom));
+}
+
+.sharecheck__path {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .filelist__item {
@@ -314,6 +1021,29 @@ body {
   font-size: 15px;
   color: var(--text);
   text-align: left;
+}
+
+/* S3c：行 = 主按钮 + 删除小按钮；删除按钮独立出来避免误触整行。 */
+.filelist__row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.filelist__row .filelist__item {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.filelist__delete {
+  flex: none;
+  width: 44px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 10px;
+  font-size: 15px;
 }
 
 button {

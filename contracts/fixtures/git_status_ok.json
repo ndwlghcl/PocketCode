@@ -1,0 +1,21 @@
+{
+  "available": true,
+  "branch": "main",
+  "changes": [
+    {
+      "path": "agents/search.py",
+      "index_status": "modified",
+      "worktree_status": "none"
+    },
+    {
+      "path": "notes.md",
+      "index_status": "none",
+      "worktree_status": "modified"
+    },
+    {
+      "path": "scratch/new_idea.py",
+      "index_status": "none",
+      "worktree_status": "untracked"
+    }
+  ]
+}
