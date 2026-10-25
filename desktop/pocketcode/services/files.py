@@ -16,7 +16,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pocketcode.security.path_guard import PathGuardError, resolve_under_root
+from pocketcode.security.path_guard import PathGuardError, resolve_under_root, scan_entry_under_root
 
 MAX_FILE_BYTES = 4 * 1024 * 1024  # 与 contracts/openapi.yaml 的 4 MiB 上限一致
 MAX_MANIFEST_ENTRIES = 100_000
@@ -103,6 +103,7 @@ _VERSION_CACHE = _VersionCache()
 
 def generate_manifest(root: Path) -> tuple[dict, bool]:
     """构建目录快照。返回 (root_node, truncated)。"""
+    root = root.resolve(strict=True)
     counter = _Counter(MAX_MANIFEST_ENTRIES)
     truncated = False
 
@@ -117,12 +118,15 @@ def generate_manifest(root: Path) -> tuple[dict, bool]:
         except OSError as exc:
             raise FileServiceError("IO_ERROR", f"目录不可读：{dir_path.name}") from exc
         for entry in entries:
+            safe_path = scan_entry_under_root(root, entry)
+            if safe_path is None:
+                continue
             rel_child = f"{rel}/{entry.name}" if rel else entry.name
             if entry.is_dir(follow_symlinks=False):
                 if _should_ignore_dir(entry.name):
                     continue
                 node["children"].append(
-                    build_dir(Path(entry.path), entry.name, rel_child)
+                    build_dir(safe_path, entry.name, rel_child)
                 )
             else:
                 if _should_ignore_file(entry.name):
@@ -182,9 +186,14 @@ def read_text_file(root: Path, relative_path: str) -> dict:
     if size > MAX_FILE_BYTES:
         raise FileServiceError("FILE_TOO_LARGE", f"文件超过 {MAX_FILE_BYTES // (1024 * 1024)} MiB 上限")
 
-    raw = target.read_bytes()
+    # 正文、长度与版本来自同一次读取，避免正文 A 搭配稍后写入的 B 的版本。
+    with target.open("rb") as handle:
+        raw = handle.read(MAX_FILE_BYTES + 1)
+        read_stat = os.fstat(handle.fileno())
+    if len(raw) > MAX_FILE_BYTES:
+        raise FileServiceError("FILE_TOO_LARGE", "文件超过 4 MiB 上限")
     encoding, text = _decode(raw)
-    version = _VERSION_CACHE.version_of(target)
+    version = "sha256:" + hashlib.sha256(raw).hexdigest()
     if "\r\n" in text:
         newline = "CRLF"
     elif "\r" in text:
@@ -197,23 +206,27 @@ def read_text_file(root: Path, relative_path: str) -> dict:
         "encoding": encoding,
         "newline": newline,
         "version": version,
-        "size": size,
-        "mtime": _iso_time(target.stat().st_mtime),
+        "size": len(raw),
+        "mtime": _iso_time(read_stat.st_mtime),
         "read_only": not os.access(target, os.W_OK),
     }
 
 
 def _decode(raw: bytes) -> tuple[str, str]:
     """返回 (encoding, text)；无法安全解码抛 UNSUPPORTED_FORMAT。"""
-    if raw.startswith(_BOM_UTF8):
-        return "utf-8-bom", raw[3:].decode("utf-8")
-    if raw.startswith(_BOM_UTF16_LE):
-        return "utf-16-le", raw[2:].decode("utf-16-le")
-    if raw.startswith(_BOM_UTF16_BE):
-        return "utf-16-be", raw[2:].decode("utf-16-be")
     try:
-        return "utf-8", raw.decode("utf-8")
+        if raw.startswith(_BOM_UTF8):
+            encoding, text = "utf-8-bom", raw[3:].decode("utf-8")
+        elif raw.startswith(_BOM_UTF16_LE):
+            encoding, text = "utf-16-le", raw[2:].decode("utf-16-le")
+        elif raw.startswith(_BOM_UTF16_BE):
+            encoding, text = "utf-16-be", raw[2:].decode("utf-16-be")
+        else:
+            encoding, text = "utf-8", raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise FileServiceError(
             "UNSUPPORTED_FORMAT", "该文件是二进制或使用不支持的编码，无法以文本打开"
         ) from exc
+    if any((ord(ch) < 32 and ch not in "\t\n\r\f") or ch == "\x7f" for ch in text):
+        raise FileServiceError("UNSUPPORTED_FORMAT", "该文件包含二进制控制字符，无法以文本打开")
+    return encoding, text

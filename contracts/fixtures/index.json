@@ -1,6 +1,8 @@
 {
   "description": "合同 fixtures 索引：每个条目把一个 JSON 示例绑定到 openapi.yaml 中的 Schema。由 integration-tests/contract/check_contracts.py 机器校验。",
   "entries": [
+    { "id": "python_context_request", "file": "python_context_request.json", "schema": "#/components/schemas/PythonContextRequest", "kind": "request" },
+    { "id": "python_context_ok", "file": "python_context_ok.json", "schema": "#/components/schemas/PythonContextResponse", "kind": "response" },
     { "id": "health_ok", "file": "health_ok.json", "schema": "#/components/schemas/HealthResponse", "kind": "response" },
     { "id": "pair_complete_request", "file": "pair_complete_request.json", "schema": "#/components/schemas/PairCompleteRequest", "kind": "request" },
     { "id": "pair_complete_response", "file": "pair_complete_response.json", "schema": "#/components/schemas/PairCompleteResponse", "kind": "response" },
@@ -22,6 +24,8 @@
     { "id": "diagnose_ok", "file": "diagnose_ok.json", "schema": "#/components/schemas/DiagnoseResponse", "kind": "response" },
     { "id": "git_status_ok", "file": "git_status_ok.json", "schema": "#/components/schemas/GitStatusResponse", "kind": "response" },
     { "id": "git_diff_ok", "file": "git_diff_ok.json", "schema": "#/components/schemas/GitDiffResponse", "kind": "response" },
+    { "id": "path_forbidden_403", "file": "path_forbidden_403.json", "schema": "#/components/schemas/ErrorResponse", "kind": "response" },
+    { "id": "trash_restore_project_removed_404", "file": "trash_restore_project_removed_404.json", "schema": "#/components/schemas/ErrorResponse", "kind": "response" },
     { "id": "error_unauthorized_401", "file": "error_unauthorized_401.json", "schema": "#/components/schemas/ErrorResponse", "kind": "response" }
   ]
 }

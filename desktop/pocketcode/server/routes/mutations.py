@@ -48,7 +48,7 @@ def _path_lock(key: str) -> Iterator[None]:
 
 
 def _translate_service_error(exc: Exception) -> ApiError:
-    if isinstance(exc, (WriteServiceError, FileServiceError, TrashServiceError)):
+    if isinstance(exc, (WriteServiceError, FileServiceError, TrashServiceError, PathGuardError)):
         raise ApiError(exc.code, exc.message, getattr(exc, "details", None)) from exc
     raise exc
 
@@ -101,7 +101,7 @@ def put_file(project_id: str, request: Request, body: FileSaveRequest) -> FileSa
                 project_id=project_id,
                 snapshots_root=snapshots_root,
             )
-        except WriteServiceError as exc:
+        except (WriteServiceError, PathGuardError) as exc:
             _translate_service_error(exc)
     return FileSaveResponse(**fields)
 
@@ -137,7 +137,7 @@ def post_files(project_id: str, request: Request, body: FileCreateRequest) -> Fi
             encoding=body.encoding,
             newline=body.newline,
         )
-    except WriteServiceError as exc:
+    except (WriteServiceError, PathGuardError) as exc:
         _translate_service_error(exc)
     return FileCreateResponse(
         path=fields["path"],
@@ -213,15 +213,20 @@ def get_trash(request: Request) -> TrashListResponse:
     status_code=200,
     summary="从回收区恢复到原路径",
     responses={
-        404: {"description": "trash_id 无效"},
+        403: {"description": "原路径越出当前授权根目录"},
+        404: {"description": "trash_id 无效或所属项目已移除授权"},
         409: {"description": "原路径被占用"},
     },
 )
 def post_restore(trash_id: str, request: Request) -> RestoreResponse:
     try:
-        _restored_id, restored_path = _trash_store(request).restore(trash_id)
-    except TrashServiceError as exc:
+        _restored_id, restored_path = _trash_store(request).restore(
+            trash_id, settings_store=request.app.state.store,
+        )
+    except (TrashServiceError, FileServiceError) as exc:
         _translate_service_error(exc)
+    except PathGuardError as exc:
+        raise ApiError(exc.code, exc.message) from exc
     return RestoreResponse(trash_id=trash_id, restored_path=restored_path)
 
 

@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import re
+import os
+import stat
 from pathlib import Path, PureWindowsPath
 
 MAX_PATH_CHARS = 512
@@ -76,3 +78,22 @@ def resolve_under_root(root: Path, relative_path: str) -> Path:
     if not candidate.is_relative_to(resolved_root):
         raise PathGuardError("PATH_FORBIDDEN", "路径越出授权项目根目录")
     return candidate
+
+
+def scan_entry_under_root(root: Path, entry: os.DirEntry) -> Path | None:
+    """扫描不跟随链接或 Windows reparse point，并再次验证真实路径。
+
+    junction 不属于 is_symlink()；跳过所有重解析点也避免内部联接形成环。
+    单文件显式访问仍使用 resolve_under_root 的语义。
+    """
+    try:
+        info = entry.stat(follow_symlinks=False)
+        if entry.is_symlink() or (
+            getattr(info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        ):
+            return None
+        candidate = Path(entry.path).resolve(strict=True)
+        return candidate if candidate.is_relative_to(root) else None
+    except (OSError, RuntimeError):
+        return None

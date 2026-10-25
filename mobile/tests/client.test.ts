@@ -17,6 +17,29 @@ function clientOf(transport: TransportFn): PocketCodeClient {
 }
 
 describe('PocketCodeClient（S2c：传输层 + 指纹）', () => {
+  it('Python 静态关联发送草稿正文、符号与行号，不调用保存接口', async () => {
+    const transport = vi.fn(async (_request: TransportRequest) => jsonResult(200, {}));
+    const client = clientOf(transport);
+    await client.pythonContext('p id', { path: 'pkg/main.py', content: 'draft', source: 'draft', symbol: 'make', line: 4 });
+    const request = transport.mock.calls[0][0];
+    expect(request.method).toBe('POST');
+    expect(request.url).toContain('/projects/p%20id/python/context');
+    expect(JSON.parse(request.body ?? '{}')).toEqual({ path: 'pkg/main.py', content: 'draft', source: 'draft', symbol: 'make', line: 4 });
+  });
+  it('Git/恢复保留服务器的路径和项目授权错误', async () => {
+    const forbidden = clientOf(async () => jsonResult(403, {
+      error: { code: 'PATH_FORBIDDEN', message: '路径越界', request_id: 'r1' },
+    }));
+    await expect(forbidden.gitDiff('pid', 'linked/code.py', false)).rejects.toMatchObject({
+      status: 403, code: 'PATH_FORBIDDEN',
+    });
+    const removed = clientOf(async () => jsonResult(404, {
+      error: { code: 'PROJECT_NOT_FOUND', message: '项目已移除', request_id: 'r2' },
+    }));
+    await expect(removed.restoreTrash('tid')).rejects.toMatchObject({
+      status: 404, code: 'PROJECT_NOT_FOUND',
+    });
+  });
   it('getHealth 携带指纹并解析响应', async () => {
     const transport = vi.fn(async (_req: TransportRequest) =>
       jsonResult(200, { status: 'ok', protocol_version: '1.0', service: 'pocketcode' }),

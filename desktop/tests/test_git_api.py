@@ -166,3 +166,43 @@ def test_git_endpoints_require_auth(env):
         == 401
     )
     env.headers["Authorization"] = token
+
+
+def test_unicode_and_spaces_keep_literal_paths(env):
+    name = '中文 文件.py'
+    target = env.repo / name
+    target.write_bytes(b'old\n')
+    _git(env.repo, 'add', '.')
+    _git(env.repo, 'commit', '-m', 'unicode fixture')
+    target.write_bytes(b'new\n')
+    body = env.get(f'/v1/projects/{env.project_id}/git/status').json()
+    assert [change['path'] for change in body['changes']] == [name]
+    diff = env.get(f'/v1/projects/{env.project_id}/git/diff', params={'path': name})
+    assert diff.status_code == 200
+    assert '+new' in diff.json()['diff']
+
+
+def test_authorized_subdirectory_limits_status_and_diff(env):
+    allowed = env.repo / 'allowed'
+    allowed.mkdir()
+    (allowed / 'inner.py').write_bytes(b'old\n')
+    (env.repo / 'private.py').write_bytes(b'private old\n')
+    _git(env.repo, 'add', '.')
+    _git(env.repo, 'commit', '-m', 'subdirectory fixture')
+    (allowed / 'inner.py').write_bytes(b'inner new\n')
+    (env.repo / 'private.py').write_bytes(b'PRIVATE NEW\n')
+    store = env.app.state.store
+    settings = store.load()
+    settings.authorized_projects[0].root_path = str(allowed)
+    store.save(settings)
+    status = env.get(f'/v1/projects/{env.project_id}/git/status')
+    assert status.status_code == 200
+    assert [c['path'] for c in status.json()['changes']] == ['inner.py']
+    normal = env.get(f'/v1/projects/{env.project_id}/git/diff', params={'path': 'inner.py'})
+    assert normal.status_code == 200 and '+inner new' in normal.json()['diff']
+    for path in [':(top)private.py', '*.py']:
+        response = env.get(f'/v1/projects/{env.project_id}/git/diff', params={'path': path})
+        assert response.status_code in (200, 400)
+        assert 'PRIVATE NEW' not in response.text
+        if response.status_code == 200:
+            assert response.json()['diff'] == ''

@@ -2,7 +2,7 @@
 
 手机优先、局域网连接、可离线使用的电脑本地代码工作台。
 电脑上写代码不必推送 GitHub；躺下打开手机就能看电脑里的最新代码、直接编辑。
-**当前阶段：S0（基础骨架与接口合同）已完成，功能尚未开始。**
+**当前阶段：S5a Python 智能关联已实现；S4/S5a 尚未真机验收。**
 
 ## 文档
 
@@ -17,6 +17,7 @@
 | [docs/decisions/](docs/decisions/) | ADR：重大技术决策留痕 |
 | [docs/BUILD_ENVIRONMENT.md](docs/BUILD_ENVIRONMENT.md) | 依赖版本、许可证、APK 构建环境 |
 | [docs/PRD_addendum.md](docs/PRD_addendum.md) | PRD v1.1 之后用户确认的新增需求 |
+| [docs/S5a_交付说明.md](docs/S5a_交付说明.md) | Python 定义/引用、关联分享的入口、验证与限制 |
 | [docs/S0_测试卡.md](docs/S0_测试卡.md) / [docs/S1_测试卡.md](docs/S1_测试卡.md) | 各阶段的用户测试步骤 |
 
 ## 目录结构
@@ -49,6 +50,11 @@ PocketCode/
 
 ## 快速开始
 
+本机已完成环境安装后，双击根目录的 **`启动PocketCode.cmd`** 即可启动管理窗口、
+系统托盘和局域网服务，无须保留命令行窗口。重复启动会提示已在运行；关闭管理窗口
+仍在托盘运行，完全停止请在托盘选择“退出”。后台启动日志保存在
+`%LOCALAPPDATA%\PocketCode\logs`。首次安装仍按下面步骤准备 Python 环境。
+
 ```powershell
 # 1. 桌面端（创建 .venv、安装依赖）
 powershell -ExecutionPolicy Bypass -File scripts\setup-desktop.ps1
@@ -74,10 +80,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build-apk.ps1
 | S0 基础骨架 | ✅ 已完成并通过真机验收 | monorepo、合同 v1 冻结、Windows 骨架、APK 空壳、校验脚本 |
 | S1 热点连通性 | ✅ 已完成并通过真机验收 | `/v1/health` + App 手动地址诊断/在线离线状态；热点互访、离线恢复、错误提示全部真机验证 |
 | S2 配对 + 只读闭环 | ✅ 已完成并通过真机验收 | HTTPS 指纹校验、扫码配对、真实项目浏览/只读阅读、离线缓存 |
-| S3 可日用编辑 | 🔶 编辑主链路真机验收通过，剩收尾三项 | 编辑/多草稿/冲突/离线保存 ✅；滚动位置记忆未解决（见 docs/HANDOFF.md §5）；目录新建/删除入口、桌面快照恢复界面待做 |
-| S3 可日用编辑 | ⬜ | |
-| S4 体验增强 | ⬜ | |
-| S5 高阶 | ⬜ | |
+| S3 可日用编辑 | ✅ 主链路真机验收通过 | 编辑/草稿/冲突/离线保存、新建/删除/恢复；滚动位置仍有历史挂账，见 docs/HANDOFF.md |
+| S4 体验增强 | 🔶 代码完成，尚未真机验收 | 搜索、大纲、Python 诊断、Git Diff、多文件分享；2026-10-26 已修复审查发现的问题 |
+| S5 高阶 | 🔶 S5a 已实现 | Python 静态关联、跨文件定义/引用、关联分享；补丁导入和 ChatGPT 直连未实现 |
 
 ## 协作规则（对后续 GLM 会话）
 

@@ -1,0 +1,26 @@
+{
+  "path": "pkg/main.py",
+  "source": "draft",
+  "source_version": "sha256:1b9221cf7fed9622773121d50937f667a08cc2ee9112415f5579de574b6935de",
+  "generated_at": "2026-10-26T00:00:00Z",
+  "analyzer": "python-ast-v1",
+  "truncated": false,
+  "scanned_files": 2,
+  "definitions": [{
+    "path": "pkg/helpers.py", "line": 1, "name": "build", "kind": "function",
+    "text": "def build():", "confidence": "resolved",
+    "reason": "词法定义或显式导入可静态定位",
+    "version": "sha256:914820b3f6cca2569d678952af06f2e93aaececc7eefdb7632226a76fba4339a"
+  }],
+  "references": [{
+    "path": "pkg/main.py", "line": 4, "name": "make", "kind": "reference",
+    "text": "return make()", "confidence": "resolved", "reason": "静态绑定到所选定义",
+    "version": "sha256:1b9221cf7fed9622773121d50937f667a08cc2ee9112415f5579de574b6935de"
+  }],
+  "related_files": [{
+    "path": "pkg/helpers.py", "line": 1, "confidence": "resolved",
+    "reasons": ["make 的定义"],
+    "version": "sha256:914820b3f6cca2569d678952af06f2e93aaececc7eefdb7632226a76fba4339a"
+  }],
+  "warnings": ["静态分析不执行代码；不推断任意对象类型、动态导入或完整运行时调用关系"]
+}

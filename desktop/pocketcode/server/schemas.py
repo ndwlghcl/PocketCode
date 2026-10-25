@@ -226,3 +226,45 @@ class GitDiffResponse(BaseModel):
     path: str
     diff: str
     truncated: bool
+
+
+# ---------------------------------------------------------------- S5a Python 静态关联
+class PythonContextRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=512)
+    symbol: str | None = Field(default=None, min_length=1, max_length=200)
+    line: int | None = Field(default=None, ge=1)
+    content: str | None = Field(default=None, max_length=1_048_576)
+    source: Literal['draft', 'cache'] = 'draft'
+
+
+class PythonLocation(BaseModel):
+    path: str
+    line: int = Field(ge=1)
+    name: str
+    kind: Literal['function', 'class', 'method', 'reference']
+    text: str
+    confidence: Literal['resolved', 'candidate']
+    reason: str
+    version: str
+
+
+class PythonRelatedFile(BaseModel):
+    path: str
+    line: int = Field(ge=1)
+    confidence: Literal['resolved', 'candidate']
+    reasons: list[str]
+    version: str
+
+
+class PythonContextResponse(BaseModel):
+    path: str
+    source: Literal['pc', 'draft', 'cache']
+    source_version: str
+    generated_at: str
+    analyzer: Literal['python-ast-v1'] = 'python-ast-v1'
+    truncated: bool
+    scanned_files: int
+    definitions: list[PythonLocation]
+    references: list[PythonLocation]
+    related_files: list[PythonRelatedFile]
+    warnings: list[str]

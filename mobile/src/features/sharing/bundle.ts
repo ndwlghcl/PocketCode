@@ -59,6 +59,9 @@ export function buildSnippetText(share: SnippetShare): string {
 export interface BundleFile {
   path: string;
   content: string;
+  source?: ShareSource;
+  version?: string;
+  reason?: string;
 }
 
 export interface MultiFileBundle {
@@ -67,6 +70,8 @@ export interface MultiFileBundle {
   source: ShareSource;
   /** 电脑版本/缓存同步时间（ISO，可为空）。 */
   fetchedAt?: string | null;
+  /** 可解释的静态分析依据和范围限制。 */
+  context?: string;
 }
 
 export function bundleTotalChars(files: BundleFile[]): number {
@@ -80,14 +85,17 @@ export function buildMultiFileText(bundle: MultiFileBundle): string {
     : '未知时间';
   const header =
     `【多文件分享】${bundle.projectName}\n` +
-    `来源：${SOURCE_LABEL[bundle.source]}（${timeHint}）\n` +
+    `${bundle.context ? '入口来源' : '来源'}：${SOURCE_LABEL[bundle.source]}（${timeHint}）\n` +
     `文件（${bundle.files.length} 个，共 ${bundleTotalChars(bundle.files)} 字符）：\n` +
     bundle.files.map((file) => `- ${file.path}`).join('\n') +
-    '\n';
+    '\n' + (bundle.context ? `关联说明：\n${bundle.context}\n` : '');
   const sections = bundle.files
     .map(
       (file) =>
         `\n## ${file.path}\n` +
+        (file.source ? `来源：${SOURCE_LABEL[file.source]}\n` : '') +
+        (file.version ? `版本/正文摘要：${file.version}\n` : '') +
+        (file.reason ? `关联依据：${file.reason}\n` : '') +
         '```\n' +
         file.content.replace(/\n$/, '') +
         '\n' +

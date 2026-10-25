@@ -11,11 +11,18 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from pocketcode.security.path_guard import resolve_under_root
+from pocketcode.services.files import project_root_or_404
+
+# 路由可创建多个仓储对象，但同一回收区的读—改—写必须共用锁。
+_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
 
 
 class TrashServiceError(Exception):
@@ -32,7 +39,8 @@ class TrashStore:
     def __init__(self, trash_root: Path) -> None:
         self._root = trash_root
         self._index_path = trash_root / "trash_index.json"
-        self._lock = threading.RLock()
+        with _LOCKS_GUARD:
+            self._lock = _LOCKS.setdefault(os.path.normcase(str(trash_root.resolve())), threading.RLock())
         trash_root.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ 索引
@@ -104,7 +112,7 @@ class TrashStore:
         with self._lock:
             return sorted(self._load_index(), key=lambda e: e["deleted_at"], reverse=True)
 
-    def restore(self, trash_id: str) -> tuple[str, str]:
+    def restore(self, trash_id: str, *, settings_store) -> tuple[str, str]:
         """恢复到原路径；被占用时报 ALREADY_EXISTS 并给出不冲突的建议路径。"""
         with self._lock:
             entries = self._load_index()
@@ -116,7 +124,8 @@ class TrashStore:
             if not payload.exists():
                 raise TrashServiceError("NOT_FOUND", "回收区内容已丢失")
 
-            target = Path(entry["source_abs"])
+            root = project_root_or_404(settings_store, entry["project_id"])
+            target = resolve_under_root(root, entry["original_path"])
             if target.exists():
                 raise TrashServiceError(
                     "ALREADY_EXISTS",

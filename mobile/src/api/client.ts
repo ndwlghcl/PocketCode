@@ -19,6 +19,8 @@ import type {
   PairCompleteRequest,
   PairCompleteResponse,
   ProjectListResponse,
+  PythonContextRequest,
+  PythonContextResponse,
   RestoreResponse,
   SearchResponse,
   TrashListResponse,
@@ -155,6 +157,10 @@ export class PocketCodeClient {
 
   async restoreTrash(trashId: string): Promise<RestoreResponse> {
     return this.request('POST', `/v1/trash/${encodeURIComponent(trashId)}/restore`);
+  }
+
+  async pythonContext(projectId: string, body: PythonContextRequest): Promise<PythonContextResponse> {
+    return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/python/context`, body);
   }
 
   /** 统一请求：非 2xx 时解析错误包裹并抛 PocketCodeError；网络层失败抛 OFFLINE。 */

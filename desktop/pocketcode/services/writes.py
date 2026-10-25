@@ -5,6 +5,7 @@
 同目录临时文件刷盘 → 原子替换 → 返回新 version。
 同项目同路径的写操作由接口层互斥（见 routes/mutations.py 的 per-path 锁）；
 外部 IDE 不遵守锁，靠"最终替换前复查 + 快照"兜底。
+这仍是乐观并发控制；最终复核与原子替换之间不具有跨进程 CAS 语义。
 
 内容换行约定（合同 FileSaveRequest）：content 中换行一律以 LF 表示；
 服务端先归一化（\r\n、\r → \n），再按 newline 字段恢复目标风格——
@@ -20,7 +21,6 @@ from pathlib import Path
 from pocketcode.security.path_guard import resolve_under_root
 from pocketcode.services.files import (
     MAX_FILE_BYTES,
-    FileServiceError,
     _VERSION_CACHE,
     _iso_time,
 )
@@ -104,6 +104,17 @@ def save_file(
             handle.write(new_bytes)
             handle.flush()
             os.fsync(handle.fileno())
+        # 外部 IDE 不遵守服务内路径锁。快照/刷盘可能耗时，提交前必须复核。
+        latest_target = resolve_under_root(root, relative_path)
+        if latest_target != target or not target.is_file():
+            raise WriteServiceError("VERSION_CONFLICT", "保存期间电脑文件的位置发生变化，未执行覆盖")
+        latest_bytes = target.read_bytes()
+        latest_version = "sha256:" + hashlib_sha256(latest_bytes)
+        if latest_version != base_version:
+            raise WriteServiceError(
+                "VERSION_CONFLICT", "保存期间电脑文件已修改，未执行覆盖",
+                {"current_version": latest_version, "base_version": base_version},
+            )
         os.replace(tmp, target)
     finally:
         if tmp.exists():

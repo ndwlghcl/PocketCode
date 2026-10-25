@@ -333,6 +333,52 @@ paths:
         "404":
           $ref: '#/components/responses/ProjectNotFound'
 
+  /v1/projects/{project_id}/python/context:
+    post:
+      operationId: pythonContext
+      summary: Python 静态关联、定义与引用候选（只读）
+      description: |
+        仅解析 AST，不执行代码、不导入项目模块。支持普通/相对导入及别名、
+        src 布局、有限的包重导出；动态导入、对象类型推断和完整调用图不支持。
+        resolved 表示静态绑定可定位，candidate 仅是同名候选，不能自动跳转。
+        不提供 content 时分析电脑文件；提供时分析手机草稿或缓存，不写盘。
+        覆盖文本的 source_version 为 UTF-8 正文摘要，不能用作保存的 base_version。
+        扫描上限 500 个 Python 文件、10000 个目录条目、每文件 1 MiB、总计
+        8 MiB、约 3 秒；结果最多 30 个定义、100 条引用、20 个关联文件。
+        触及限额返回 truncated=true；跳过文件和无法定位的导入在 warnings 说明。
+      tags: [python]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PythonContextRequest'
+      responses:
+        "200":
+          description: 静态建议及不完整性提示
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PythonContextResponse'
+        "400":
+          $ref: '#/components/responses/InvalidRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/PathForbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "413":
+          $ref: '#/components/responses/FileTooLarge'
+        "415":
+          description: 非 Python 或无法安全解码
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v1/projects/{project_id}/git/status:
     get:
       operationId: gitStatus
@@ -365,6 +411,7 @@ paths:
         返回 `git diff -- <path>`（staged=true 时 `git diff --cached -- <path>`）
         的文本。上限 256 KiB，超出 `truncated: true`。未跟踪的新文件没有
         diff 内容（返回空文本）。
+        path 按字面文件路径处理，不解释 Git pathspec；范围限制在当前授权根。
       tags: [git]
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -392,6 +439,8 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         "401":
           $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/PathForbidden'
         "404":
           $ref: '#/components/responses/ProjectNotFound'
         "500":
@@ -525,6 +574,8 @@ paths:
       description: |
         恢复到原路径；原路径已被占用时不覆盖，返回 409 `ALREADY_EXISTS`，
         `details.suggested_path` 给出不冲突的建议路径供客户端选择。
+        恢复时重新确认项目仍被授权（否则 404 PROJECT_NOT_FOUND），并重新
+        验证原相对路径的真实边界（越界时 403 PATH_FORBIDDEN）。
       tags: [trash]
       parameters:
         - name: trash_id
@@ -542,6 +593,8 @@ paths:
                 $ref: '#/components/schemas/RestoreResponse'
         "401":
           $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/PathForbidden'
         "404":
           $ref: '#/components/responses/NotFound'
         "409":
@@ -1137,6 +1190,121 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/GitFileStatus'
+
+    PythonContextRequest:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        symbol:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: 标识符或点分名称；缺省时推荐整个文件的上下文
+        line:
+          type: integer
+          minimum: 1
+          description: 当前符号所在行，用于区分局部作用域
+        content:
+          type: string
+          maxLength: 1048576
+          description: 可选覆盖正文；UTF-8 编码后还须不超过 1 MiB
+        source:
+          type: string
+          enum: [draft, cache]
+          default: draft
+          description: 仅在提供 content 时生效
+
+    PythonLocation:
+      type: object
+      additionalProperties: false
+      required: [path, line, name, kind, text, confidence, reason, version]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        line:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [function, class, method, reference]
+        text:
+          type: string
+        confidence:
+          type: string
+          enum: [resolved, candidate]
+        reason:
+          type: string
+        version:
+          $ref: '#/components/schemas/Sha256Version'
+
+    PythonRelatedFile:
+      type: object
+      additionalProperties: false
+      required: [path, line, confidence, reasons, version]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        line:
+          type: integer
+          minimum: 1
+        confidence:
+          type: string
+          enum: [resolved, candidate]
+        reasons:
+          type: array
+          items:
+            type: string
+        version:
+          $ref: '#/components/schemas/Sha256Version'
+
+    PythonContextResponse:
+      type: object
+      additionalProperties: false
+      required: [path, source, source_version, generated_at, analyzer, truncated, scanned_files, definitions, references, related_files, warnings]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        source:
+          type: string
+          enum: [pc, draft, cache]
+        source_version:
+          $ref: '#/components/schemas/Sha256Version'
+        generated_at:
+          type: string
+          format: date-time
+        analyzer:
+          type: string
+          const: python-ast-v1
+        truncated:
+          type: boolean
+        scanned_files:
+          type: integer
+          minimum: 0
+        definitions:
+          type: array
+          maxItems: 30
+          items:
+            $ref: '#/components/schemas/PythonLocation'
+        references:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/PythonLocation'
+        related_files:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/PythonRelatedFile'
+        warnings:
+          type: array
+          maxItems: 30
+          items:
+            type: string
 
     GitDiffResponse:
       type: object

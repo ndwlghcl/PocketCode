@@ -1,4 +1,21 @@
-# PocketCode 交接文档（S4ef → 下一个对话）
+# PocketCode 交接文档（S5a → 下一个对话）
+
+## 最新增量（2026-10-26，优先于下方历史记录）
+
+- 用户明确暂不安排手动测试，后续使用发现问题再修；不要把未做的真机验证写成通过。
+- 已完成 11 项审查修复，见 [修复记录](reviews/2026-10-26/FIXES.md)。
+- 已实现 S5a：Python 静态关联、跨文件定义/引用、关联文本分享，见
+  [S5a 交付说明](S5a_交付说明.md) 和 [ADR-0006](decisions/ADR-0006-python-static-context.md)。
+  补丁导入与 ChatGPT 直连尚未实现。
+- APK 标识 `S5a · build 2026-10-26-2`，versionCode 10 / versionName `1.0-s5a1`。
+  更新后电脑端需从托盘退出并重新启动，以加载新增的只读分析端点。
+- 以下 S4 验收安排、旧测试数量和旧版本号为历史快照；最新验证记录在 S5a 交付说明。
+- 后续已增加根目录 `启动PocketCode.cmd`，双击启动管理窗口、托盘和服务；
+  `scripts/start-desktop.ps1 -Background` 使用隐藏的服务进程并记录启动日志。
+- Git 已有 S0、S1～S3b、S3c～S4ef 三次历史提交，下方“尚无 commit”为过期记录。
+  当前 GitHub 目标仓库为 `https://github.com/ndwlghcl/PockectCode`（注意仓库名拼写）。
+
+---
 
 **交接时间**：2026-10-25（S4e Git Diff + S4f 多文件分享）  
 **交接人**：主集成对话（S0→S4ef 全程）  

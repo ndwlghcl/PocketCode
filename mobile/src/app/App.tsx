@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 
@@ -30,6 +30,8 @@ interface Viewer {
   cachedAt?: string;
   /** 搜索结果定位：打开后跳到的行（1-based）。 */
   line?: number;
+  navigationId?: number;
+  mode?: 'read' | 'edit';
 }
 
 function statusView(connection: ReturnType<typeof useConnection>): {
@@ -69,6 +71,11 @@ export function App() {
   /** 文件页全屏阅读时为 true：隐藏状态栏与页边距，编辑器占满全屏。 */
   const [immersive, setImmersive] = useState(false);
   const viewerBackGuard = useRef<(() => boolean) | null>(null);
+  const viewerHistory = useRef<Viewer[]>([]);
+  const navigationId = useRef(0);
+  const backFromViewer = useCallback(() => {
+    setViewer(viewerHistory.current.pop() ?? null);
+  }, []);
   const { dot, text } = statusView(connection);
 
   const online = connection.status.state === 'online';
@@ -93,7 +100,7 @@ export function App() {
         return; // 文件页内部已处理（如退出编辑模式）
       }
       if (viewer) {
-        setViewer(null);
+        backFromViewer();
       } else if (showConnection) {
         setShowConnection(false);
       } else if (screen.name === 'explorer') {
@@ -109,7 +116,7 @@ export function App() {
     return () => {
       void handlePromise.then((handle) => handle.remove());
     };
-  }, [viewer, showConnection, screen.name, homeTab]);
+  }, [viewer, showConnection, screen.name, homeTab, backFromViewer]);
 
   const connectionOpen = showConnection;
   const atHome = !connectionOpen && !viewer && screen.name === 'projects';
@@ -120,6 +127,7 @@ export function App() {
     meta?: { fromCache?: boolean; cachedAt?: string },
   ) => {
     setHomeTab('projects');
+    viewerHistory.current = [];
     setScreen({ name: 'explorer', project });
     setViewer({ project, data, fromCache: meta?.fromCache, cachedAt: meta?.cachedAt });
   };
@@ -142,6 +150,7 @@ export function App() {
           <ConnectionScreen connection={connection} client={client} />
         ) : viewer ? (
           <FileScreen
+            key={`${viewer.project.id}:${viewer.data.path}:${viewer.navigationId ?? 0}`}
             client={client}
             projectId={viewer.project.id}
             initialData={viewer.data}
@@ -149,7 +158,15 @@ export function App() {
             cachedAt={viewer.cachedAt}
             online={online}
             revoked={revoked}
-            onBack={() => setViewer(null)}
+            onBack={backFromViewer}
+            projectName={viewer.project.name}
+            initialMode={viewer.mode}
+            onOpenRelated={(data, line, origin) => {
+              // 返回原文件时恢复持久阅读位置，不再次执行最初的搜索跳行。
+              viewerHistory.current = [...viewerHistory.current,
+                { ...viewer, data: origin.data, mode: origin.mode, line: undefined }].slice(-20);
+              setViewer({ project: viewer.project, data, line, navigationId: ++navigationId.current });
+            }}
             registerBackGuard={(guard) => {
               viewerBackGuard.current = guard;
             }}

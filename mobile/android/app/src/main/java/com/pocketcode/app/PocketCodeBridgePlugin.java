@@ -48,6 +48,7 @@ public class PocketCodeBridgePlugin extends Plugin {
     private static final int MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
     private SharedPreferences securePrefs = null;
+    private DiskKeyValueStore diskStore = null;
 
     // ---------------------------------------------------------------- HTTP
     @PluginMethod
@@ -208,26 +209,17 @@ public class PocketCodeBridgePlugin extends Plugin {
         return dir;
     }
 
-    private java.io.File dataFileForKey(String key) {
-        if (key == null || key.isEmpty() || key.length() > 200
-                || !key.matches("[A-Za-z0-9._%~-]+")) {
-            return null;
-        }
-        return new java.io.File(dataDir(), key);
+    private synchronized DiskKeyValueStore dataStore() throws java.io.IOException {
+        if (diskStore == null) diskStore = new DiskKeyValueStore(dataDir());
+        return diskStore;
     }
 
     @PluginMethod
     public void dataSet(PluginCall call) {
         String key = call.getString("key", "");
         String value = call.getString("value", "");
-        java.io.File file = dataFileForKey(key);
-        if (file == null) {
-            call.reject("非法的存储键", "ERR_KEY");
-            return;
-        }
         try {
-            java.nio.file.Files.write(
-                    file.toPath(), value.getBytes(StandardCharsets.UTF_8));
+            dataStore().set(key, value);
             call.resolve();
         } catch (Exception e) {
             call.reject("数据写入失败: " + e.getMessage(), "ERR_DATA");
@@ -236,17 +228,9 @@ public class PocketCodeBridgePlugin extends Plugin {
 
     @PluginMethod
     public void dataGet(PluginCall call) {
-        java.io.File file = dataFileForKey(call.getString("key", ""));
-        if (file == null) {
-            call.reject("非法的存储键", "ERR_KEY");
-            return;
-        }
         try {
             JSObject result = new JSObject();
-            result.put("value", file.exists()
-                    ? new String(java.nio.file.Files.readAllBytes(file.toPath()),
-                            StandardCharsets.UTF_8)
-                    : null);
+            result.put("value", dataStore().get(call.getString("key", "")));
             call.resolve(result);
         } catch (Exception e) {
             call.reject("数据读取失败: " + e.getMessage(), "ERR_DATA");
@@ -255,15 +239,12 @@ public class PocketCodeBridgePlugin extends Plugin {
 
     @PluginMethod
     public void dataDelete(PluginCall call) {
-        java.io.File file = dataFileForKey(call.getString("key", ""));
-        if (file == null) {
-            call.reject("非法的存储键", "ERR_KEY");
-            return;
+        try {
+            dataStore().remove(call.getString("key", ""));
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("数据删除失败: " + e.getMessage(), "ERR_DATA");
         }
-        if (file.exists()) {
-            file.delete();
-        }
-        call.resolve();
     }
 
     /** 按前缀枚举存储键（S4a2 草稿箱需要跨文件列出全部草稿）。 */
@@ -273,15 +254,7 @@ public class PocketCodeBridgePlugin extends Plugin {
         try {
             JSObject result = new JSObject();
             com.getcapacitor.JSArray keys = new com.getcapacitor.JSArray();
-            java.io.File[] files = dataDir().listFiles();
-            if (files != null) {
-                java.util.Arrays.sort(files, java.util.Comparator.comparing(java.io.File::getName));
-                for (java.io.File file : files) {
-                    if (file.isFile() && file.getName().startsWith(prefix)) {
-                        keys.put(file.getName());
-                    }
-                }
-            }
+            for (String key : dataStore().keys(prefix)) keys.put(key);
             result.put("keys", keys);
             call.resolve(result);
         } catch (Exception e) {

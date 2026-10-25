@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from pocketcode.security.tls import TlsError, ensure_server_tls
+from pocketcode.security.path_guard import PathGuardError
 from pocketcode.server.app import create_app
 from pocketcode.server.runner import ServerRunner
 from pocketcode.services.pairing import PairingService

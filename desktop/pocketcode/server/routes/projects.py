@@ -22,6 +22,8 @@ from pocketcode.server.schemas import (
     ProjectListResponse,
     ProjectSummary,
     SearchResponse,
+    PythonContextRequest,
+    PythonContextResponse,
 )
 from pocketcode.services.diagnostics import DiagnoseServiceError, diagnose_python_source
 from pocketcode.services.files import (
@@ -33,6 +35,7 @@ from pocketcode.services.files import (
 )
 from pocketcode.services.gitinfo import GitServiceError, git_diff, git_status
 from pocketcode.services.search import SearchServiceError, search_project
+from pocketcode.services.python_context import analyze_context
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_device)])
 
@@ -188,7 +191,10 @@ def get_git_status(project_id: str, request: Request) -> GitStatusResponse:
         root = project_root_or_404(store, project_id)
     except FileServiceError as exc:
         _translate(exc)
-    result = git_status(root)
+    try:
+        result = git_status(root)
+    except GitServiceError as exc:
+        raise ApiError(exc.code, exc.message) from exc
     return GitStatusResponse(**result)
 
 
@@ -199,6 +205,7 @@ def get_git_status(project_id: str, request: Request) -> GitStatusResponse:
     summary="单个文件的未提交 Diff（unified 文本）",
     responses={
         400: {"description": "路径不符合合同规则"},
+        403: {"description": "路径越出授权根目录"},
         "500": {"description": "git 命令失败"},
     },
 )
@@ -222,6 +229,22 @@ def get_git_diff(
     except GitServiceError as exc:
         raise ApiError(exc.code, exc.message) from exc
     return GitDiffResponse(**result)
+
+
+@router.post('/projects/{project_id}/python/context', response_model=PythonContextResponse,
+             summary='Python 静态关联、定义与引用（只读）',
+             responses={400: {'description': '请求无效'}, 403: {'description': '路径越界'},
+                        404: {'description': '项目或文件不存在'}, 413: {'description': '正文超限'},
+                        415: {'description': '非 Python 或无法解码'}})
+def python_context(project_id: str, request: Request, body: PythonContextRequest) -> PythonContextResponse:
+    try:
+        root = project_root_or_404(request.app.state.store, project_id)
+        result = analyze_context(root, body.path, body.symbol, body.line, body.content, body.source)
+    except PathGuardError as exc:
+        raise ApiError(exc.code, exc.message) from exc
+    except FileServiceError as exc:
+        _translate(exc)
+    return PythonContextResponse(**result)
 
 
 __all__ = ["router", "DeviceIdentity"]

@@ -249,6 +249,48 @@ export interface PairCompleteRequest {
   device_platform: string;
 }
 
+// ---------------------------------------------------------------- S5a Python
+export interface PythonContextRequest {
+  path: RelativePath;
+  symbol?: string;
+  line?: number;
+  content?: string;
+  source?: 'draft' | 'cache';
+}
+
+export interface PythonLocation {
+  path: RelativePath;
+  line: number;
+  name: string;
+  kind: 'function' | 'class' | 'method' | 'reference';
+  text: string;
+  confidence: 'resolved' | 'candidate';
+  reason: string;
+  version: Sha256Version;
+}
+
+export interface PythonRelatedFile {
+  path: RelativePath;
+  line: number;
+  confidence: 'resolved' | 'candidate';
+  reasons: string[];
+  version: Sha256Version;
+}
+
+export interface PythonContextResponse {
+  path: RelativePath;
+  source: 'pc' | 'draft' | 'cache';
+  source_version: Sha256Version;
+  generated_at: string;
+  analyzer: 'python-ast-v1';
+  truncated: boolean;
+  scanned_files: number;
+  definitions: PythonLocation[];
+  references: PythonLocation[];
+  related_files: PythonRelatedFile[];
+  warnings: string[];
+}
+
 export interface PairCompleteResponse {
   device_id: string;
   device_token: string;

@@ -66,6 +66,11 @@
 | manifest 条目数 | 100,000（超出时 `truncated: true`，不报错） | — |
 | 回收批量路径数 | 100 | 400 `INVALID_REQUEST` |
 | 相对路径长度 | 512 字符（单段 255） | 400 `PATH_INVALID` |
+| Python 关联单文件/入口正文 | 1 MiB | 入口超限返回 413 `FILE_TOO_LARGE`；其他文件跳过并警告 |
+
+Python 关联接口复用现有错误码：非 `.py` 文件返回 415 `UNSUPPORTED_FORMAT`，
+非法符号或行号返回 400 `INVALID_REQUEST`。语法错误、无法解析的导入、扫描预算
+或结果限额返回 200，在 `warnings` 中说明；预算超限还会设置 `truncated: true`。
 
 ## 变更规则
 

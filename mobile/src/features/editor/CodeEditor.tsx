@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Compartment, EditorState, StateEffect, StateField } from '@codemirror/state';
+import { Annotation, Compartment, EditorState, StateEffect, StateField } from '@codemirror/state';
 import {
   Decoration,
   type DecorationSet,
@@ -36,6 +36,7 @@ export interface Diagnostic {
 
 /** 波浪线标记：编辑过程中随文档变更自动映射位置。 */
 const setDiagnosticsEffect = StateEffect.define<DecorationSet>();
+const externalDocSync = Annotation.define<boolean>();
 const diagnosticsField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(value, transaction) {
@@ -68,6 +69,8 @@ interface Props {
   onSymbolPress?: (symbol: string, line: number) => void;
   /** 编辑模式内容变化回调。 */
   onDocChange?: (value: string) => void;
+  /** 仅报告光标符号；不会因移动光标而跳转或请求网络。 */
+  onCursorSymbol?: (value: { symbol: string; line: number } | null) => void;
   /** 内部 scroller 滚动回调（阅读位置记录）。 */
   onScrollTop?: (scrollTop: number) => void;
   /** 失焦回调（编辑模式落草稿的安全网）。 */
@@ -111,6 +114,7 @@ export function CodeEditor({
   onSymbolPress,
   onSelection,
   onDocChange,
+  onCursorSymbol,
   onScrollTop,
   onBlur,
   className,
@@ -123,6 +127,8 @@ export function CodeEditor({
   // 回调走 ref：视图闭包始终读最新函数，不因回调身份重建扩展
   const changeRef = useRef(onDocChange);
   changeRef.current = onDocChange;
+  const cursorRef = useRef(onCursorSymbol);
+  cursorRef.current = onCursorSymbol;
   const scrollRef = useRef(onScrollTop);
   scrollRef.current = onScrollTop;
   const blurRef = useRef(onBlur);
@@ -160,8 +166,14 @@ export function CodeEditor({
           ]),
           diagnosticsField,
           EditorView.updateListener.of((update) => {
-            if (update.docChanged) {
+            if (update.docChanged && !update.transactions.some((tr) => tr.annotation(externalDocSync))) {
               changeRef.current?.(update.state.doc.toString());
+            }
+            if (!readOnlyRef.current && cursorRef.current) {
+              const position = update.state.selection.main.head;
+              const line = update.state.doc.lineAt(position);
+              const symbol = identifierAt(line.text, position - line.from);
+              cursorRef.current(symbol ? { symbol, line: line.number } : null);
             }
             // 只读模式的选区上抛（片段分享）；编辑模式不触发
             if (onSelectionRef.current && readOnlyRef.current) {
@@ -180,11 +192,6 @@ export function CodeEditor({
             }
           }),
           keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
-          EditorView.updateListener.of((update) => {
-            if (update.docChanged) {
-              changeRef.current?.(update.state.doc.toString());
-            }
-          }),
         ],
       }),
     });
@@ -208,6 +215,7 @@ export function CodeEditor({
     if (view.state.doc.toString() !== doc) {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: doc },
+        annotations: externalDocSync.of(true),
       });
       view.scrollDOM.scrollTop = 0;
     }

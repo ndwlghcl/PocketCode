@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from pocketcode.security.path_guard import PathGuardError, resolve_under_root
 
 MAX_DIFF_CHARS = 256 * 1024
 GIT_TIMEOUT_SECONDS = 6.0
@@ -43,7 +44,7 @@ def _run_git(root: Path, *args: str) -> tuple[int, str, str] | None:
     """运行只读 git 命令；git 未安装返回 None。失败不抛异常，由调用方判断 rc。"""
     try:
         completed = subprocess.run(  # noqa: S603 - 参数为固定列表，无 shell
-            ["git", "-C", str(root), *args],
+            ["git", "--literal-pathspecs", "-C", str(root), *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -61,7 +62,8 @@ def _run_git(root: Path, *args: str) -> tuple[int, str, str] | None:
 
 def git_status(root: Path) -> dict:
     """返回 GitStatusResponse 字段。"""
-    result = _run_git(root, "status", "--porcelain=v1", "-b", "--no-renames")
+    result = _run_git(root, "status", "--porcelain=v1", "-z", "-b", "--no-renames",
+                      "--untracked-files=all", "--", ".")
     if result is None:
         return {"available": False, "reason": "电脑上没有安装 git", "branch": None, "changes": []}
     returncode, stdout, stderr = result
@@ -74,9 +76,14 @@ def git_status(root: Path) -> dict:
             "changes": [],
         }
 
+    # porcelain 的路径始终从仓库根起算；API 的路径必须从授权根起算。
+    prefix_result = _run_git(root, "rev-parse", "--show-prefix")
+    if prefix_result is None or prefix_result[0] != 0:
+        raise GitServiceError("IO_ERROR", "无法确定授权目录在仓库中的位置")
+    prefix = prefix_result[1].rstrip("\r\n")
     branch: str | None = None
     changes: list[dict] = []
-    for line in stdout.splitlines():
+    for line in stdout.split("\x00"):
         if line.startswith("## "):
             head = line[3:]
             # "main...origin/main [ahead 1]" → main；"HEAD (no branch)" → detached
@@ -86,9 +93,16 @@ def git_status(root: Path) -> dict:
             continue
         if len(line) < 4:
             continue
-        index_char, worktree_char, path = line[0], line[1], line[3:].strip()
+        index_char, worktree_char, path = line[0], line[1], line[3:]
         if index_char == "!" or worktree_char == "!":
             continue  # --ignored 未开启时不应出现，防御性跳过
+        if not path.startswith(prefix):
+            continue
+        path = path[len(prefix):]
+        try:
+            resolve_under_root(root, path)
+        except (PathGuardError, OSError):
+            continue
         changes.append(
             {
                 "path": path,
@@ -101,7 +115,13 @@ def git_status(root: Path) -> dict:
 
 def git_diff(root: Path, relative_path: str, staged: bool) -> dict:
     """返回 GitDiffResponse 字段。"""
-    args = ["diff", "--no-color"]
+    try:
+        resolve_under_root(root, relative_path)
+    except PathGuardError as exc:
+        raise GitServiceError(exc.code, exc.message) from exc
+    except OSError as exc:
+        raise GitServiceError("PATH_INVALID", "路径不符合本机文件名规则") from exc
+    args = ["diff", "--no-color", "--no-ext-diff", "--no-textconv"]
     if staged:
         args.append("--cached")
     args.extend(["--", relative_path])

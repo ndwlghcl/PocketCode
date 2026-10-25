@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from pocketcode.security.path_guard import scan_entry_under_root
 
 from pocketcode.services.files import _decode, _should_ignore_dir, _should_ignore_file
 
@@ -46,6 +47,7 @@ def normalize_query(query: str) -> str:
 
 def search_project(root: Path, query: str) -> dict:
     """返回 SearchResponse 字段（不含 project_id——那是路由层知道的）。"""
+    root = root.resolve(strict=True)
     normalized = normalize_query(query)
     needle = normalized.lower()
     matches: list[dict] = []
@@ -64,10 +66,13 @@ def search_project(root: Path, query: str) -> dict:
         for entry in entries:
             if truncated:
                 return
+            safe_path = scan_entry_under_root(root, entry)
+            if safe_path is None:
+                continue
             rel_child = f"{rel}/{entry.name}" if rel else entry.name
             if entry.is_dir(follow_symlinks=False):
                 if not _should_ignore_dir(entry.name):
-                    walk(Path(entry.path), rel_child)
+                    walk(safe_path, rel_child)
                 continue
             if _should_ignore_file(entry.name) or entry.is_symlink():
                 continue
@@ -79,11 +84,9 @@ def search_project(root: Path, query: str) -> dict:
                     truncated = True
                     continue
                 scanned += 1
-                raw = Path(entry.path).read_bytes()
+                raw = safe_path.read_bytes()
             except OSError:
                 continue
-            if b"\x00" in raw:
-                continue  # 二进制启发（git 同款规则）：严格 UTF-8 挡不住 NUL 字节
             try:
                 _encoding, text = _decode(raw)
             except Exception:  # noqa: BLE001 - 二进制/不支持编码：静默跳过

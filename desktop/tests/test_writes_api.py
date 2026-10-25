@@ -253,3 +253,59 @@ def test_write_endpoints_require_auth(env):
               "content": "x", "encoding": "utf-8", "newline": "LF"},
     )
     assert resp.status_code == 401
+
+
+def test_restore_rechecks_project_authorization(env):
+    assert _trash(env, 'sample.py').status_code == 200
+    trash_id = env.get('/v1/trash').json()['items'][0]['trash_id']
+    env.app.state.store.remove_authorized_project(env.project_id)
+    response = env.post(f'/v1/trash/{trash_id}/restore')
+    assert response.status_code == 404
+    assert response.json()['error']['code'] == 'PROJECT_NOT_FOUND'
+    assert not (env.project_dir / 'sample.py').exists()
+    assert len(env.get('/v1/trash').json()['items']) == 1
+
+
+def test_restore_rechecks_changed_directory_boundary(env):
+    import subprocess
+    folder = env.project_dir / 'folder'
+    folder.mkdir()
+    (folder / 'keep.txt').write_bytes(b'keep')
+    assert _trash(env, 'folder/keep.txt').status_code == 200
+    trash_id = env.get('/v1/trash').json()['items'][0]['trash_id']
+    folder.rmdir()
+    outside = env.project_dir.parent / 'outside'
+    outside.mkdir()
+    result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(folder), str(outside)],
+                            capture_output=True)
+    if result.returncode:
+        pytest.skip('无法创建 junction')
+    try:
+        response = env.post(f'/v1/trash/{trash_id}/restore')
+        assert response.status_code == 403
+        assert response.json()['error']['code'] == 'PATH_FORBIDDEN'
+        assert not (outside / 'keep.txt').exists()
+    finally:
+        folder.rmdir()
+
+
+def test_linked_write_paths_return_forbidden_without_touching_outside(env):
+    import subprocess
+    outside = env.project_dir.parent / 'outside-write'
+    outside.mkdir()
+    (outside / 'keep.py').write_bytes(b'keep\n')
+    link = env.project_dir / 'linked'
+    result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(outside)],
+                            capture_output=True)
+    if result.returncode:
+        pytest.skip('无法创建 junction')
+    try:
+        saved = _save(env, 'linked/keep.py', 'changed\n')
+        created = env.post(f'/v1/projects/{env.project_id}/files',
+                           json={'path': 'linked/new.py', 'type': 'file'})
+        assert saved.status_code == created.status_code == 403
+        assert saved.json()['error']['code'] == 'PATH_FORBIDDEN'
+        assert (outside / 'keep.py').read_bytes() == b'keep\n'
+        assert not (outside / 'new.py').exists()
+    finally:
+        link.rmdir()

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { Diagnostic, FileContentResponse } from '../../api/types';
+import type { Diagnostic, FileContentResponse, PythonLocation, PythonRelatedFile } from '../../api/types';
 import { PocketCodeClient, PocketCodeError } from '../../api/client';
 import { saveCachedFile } from '../../storage/cacheStore';
 import { CodeEditor } from '../editor/CodeEditor';
@@ -16,6 +16,7 @@ import {
   type ShareSource,
 } from '../sharing/bundle';
 import { shareText } from '../sharing/share';
+import { PythonContextPanel, type ContextQuery, type ContextView } from '../related/PythonContextPanel';
 import {
   createPositionSaver,
   loadReadPosition,
@@ -49,6 +50,10 @@ interface Props {
   onImmersiveChange?: (value: boolean) => void;
   /** 搜索结果定位：打开后跳到的行（1-based，仅阅读）。 */
   initialLine?: number;
+  projectName?: string;
+  onOpenRelated?: (data: FileContentResponse, line: number,
+    origin: { data: FileContentResponse; mode: 'read' | 'edit' }) => void;
+  initialMode?: 'read' | 'edit';
 }
 
 /** 底部抽屉：代码大纲，或长按符号后的操作单（PRD §4.2/§4.3，主动触发防误触）。 */
@@ -70,7 +75,7 @@ const AUTOSAVE_NAME = '自动草稿';
 
 const EDIT_STATE_TEXT: Record<EditState, string> = {
   clean: '无未保存修改',
-  dirty: '有未保存修改（已自动存为本地草稿）',
+  dirty: '有未保存到电脑的修改',
   saving: '正在保存到电脑…',
   synced: '✔ 已同步到电脑',
   conflict: '电脑文件已在别处修改，请选择处理方式',
@@ -107,9 +112,12 @@ export function FileScreen({
   registerBackGuard,
   onImmersiveChange,
   initialLine,
+  projectName,
+  onOpenRelated,
+  initialMode = 'read',
 }: Props) {
   const [data, setData] = useState<FileContentResponse>(initialData);
-  const [mode, setMode] = useState<'read' | 'edit'>('read');
+  const [mode, setMode] = useState<'read' | 'edit'>(initialMode);
   const [editText, setEditText] = useState(initialData.content);
   const [editState, setEditState] = useState<EditState>('clean');
   const [drafts, setDraftsState] = useState<FileDraft[]>([]);
@@ -118,6 +126,7 @@ export function FileScreen({
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [switchBusy, setSwitchBusy] = useState(false);
+  const [localDraftState, setLocalDraftState] = useState<'pending' | 'saved' | 'error'>('saved');
   const [wrap, setWrap] = useState(true);
   /** 上次关闭 App 时的阅读位置（打开文件后异步读出）。 */
   const [savedReadTop, setSavedReadTop] = useState<number | null>(null);
@@ -144,6 +153,8 @@ export function FileScreen({
     { text: string; startLine: number; endLine: number } | null
   >(null);
   const [sharing, setSharing] = useState(false);
+  const [contextQuery, setContextQuery] = useState<ContextQuery | null>(null);
+  const cursorSymbolRef = useRef<{ symbol: string; line: number } | null>(null);
 
   // 全屏状态同步给根布局（隐藏状态栏与页边距）；卸载时必还原
   useEffect(() => {
@@ -159,6 +170,9 @@ export function FileScreen({
   const activeDraftIdRef = useRef<string | null>(null);
   const draftsRef = useRef<FileDraft[]>([]);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savedModeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savingRef = useRef(false);
+  const editRevisionRef = useRef(0);
   const queueRef = useRef<Promise<unknown>>(Promise.resolve());
 
   // ---- 阅读位置（S4a）：滚动容器在 CodeMirror 内部，位置落原生磁盘 KV ----
@@ -184,6 +198,7 @@ export function FileScreen({
     (top: number) => {
       lastReadTopRef.current = top;
       userScrolledRef.current = true;
+      setReturnScrollTop(null);
       positionSaverRef.current.push(top);
     },
     [],
@@ -207,6 +222,13 @@ export function FileScreen({
     if (autosaveTimer.current) {
       clearTimeout(autosaveTimer.current);
       autosaveTimer.current = null;
+    }
+  }, []);
+
+  const cancelSavedModeTimer = useCallback(() => {
+    if (savedModeTimer.current) {
+      clearTimeout(savedModeTimer.current);
+      savedModeTimer.current = null;
     }
   }, []);
 
@@ -242,7 +264,7 @@ export function FileScreen({
         ? draftsRef.current.find((draft) => draft.id === outgoingId)
         : null;
       const draft: FileDraft = {
-        id: existing?.id ?? newDraftId(),
+        id: existing?.id ?? outgoingId ?? newDraftId(),
         name: existing?.name ?? AUTOSAVE_NAME,
         path: initialData.path,
         projectId,
@@ -250,103 +272,150 @@ export function FileScreen({
         baseVersion: baseVersionRef.current,
         savedAt: new Date().toISOString(),
       };
+      // 连续失焦/自动保存都应更新同一份草稿，不能在落盘等待期间生成新 id。
+      if (!outgoingId) {
+        activeDraftIdRef.current = draft.id;
+        setActiveDraftId(draft.id);
+      }
       return enqueue(() => upsertDraft(projectId, initialData.path, draft)).then(
         (stored) => {
           applyStored(stored);
+          if (text === editTextRef.current) setLocalDraftState('saved');
           return stored;
         },
-      );
+      ).catch(() => {
+        setLocalDraftState('error');
+        setMessage('本地草稿保存失败，内容仍在编辑器中，请勿关闭页面；可重试或复制备份。');
+        return null;
+      });
     },
     [applyStored, enqueue, initialData.path, projectId],
   );
 
   const onEditChange = (value: string) => {
+    if (value === editTextRef.current) return;
+    editRevisionRef.current++;
+    editTextRef.current = value;
     setEditText(value);
+    setLocalDraftState('pending');
+    cancelSavedModeTimer();
     setEditState((state) => (state === 'synced' || state === 'clean' ? 'dirty' : state));
     cancelPendingAutosave();
     autosaveTimer.current = setTimeout(() => void flushActiveDraft(value), AUTOSAVE_DEBOUNCE_MS);
   };
 
+  const unmountFlushRef = useRef(flushActiveDraft);
+  unmountFlushRef.current = flushActiveDraft;
+  useEffect(() => () => {
+    cancelPendingAutosave();
+    cancelSavedModeTimer();
+    if (editStateRef.current === 'dirty' || editStateRef.current === 'conflict') {
+      void unmountFlushRef.current();
+    }
+  }, [cancelPendingAutosave, cancelSavedModeTimer]);
+
   // ---- 保存到电脑 ----
   const saveToPc = useCallback(
     async (overrideBaseVersion?: string) => {
-      if (!client) return;
+      if (!client || savingRef.current || revoked || switchBusy) return;
+      savingRef.current = true;
+      const submittedContent = editTextRef.current;
+      const submittedId = activeDraftIdRef.current ?? newDraftId();
+      const submittedDraft = draftsRef.current.find((draft) => draft.id === submittedId);
+      activeDraftIdRef.current = submittedId;
+      setActiveDraftId(submittedId);
       cancelPendingAutosave();
+      cancelSavedModeTimer();
       setSaving(true);
       setEditState('saving');
       setMessage(null);
       try {
+        // 请求中断/页面卸载前，至少先把本次发送的正文保留到本机。
+        await flushActiveDraft(submittedContent);
         const response = await client.saveFile(projectId, {
           path: initialData.path,
           base_version: overrideBaseVersion ?? baseVersionRef.current,
-          content: editTextRef.current,
+          content: submittedContent,
           encoding: data.encoding,
           newline: data.newline,
         });
         const updated: FileContentResponse = {
           ...data,
-          content: editTextRef.current,
+          content: submittedContent,
           version: response.version,
           size: response.size,
           mtime: response.mtime,
         };
         setData(updated);
-        void saveCachedFile(projectId, updated);
+        void saveCachedFile(projectId, updated).catch(() => {
+          setMessage('电脑保存成功，但本地缓存更新失败。');
+        });
         // S4a2：保存成功**不再清空草稿**——草稿是修改版本/灵感的记录，
         // 由用户在草稿箱手动管理。这里把活动草稿更新为刚保存的内容与
         // 新版本号（继续从它编辑不会假冲突），其余草稿原样保留。
-        const existing =
-          activeDraftIdRef.current
-            ? draftsRef.current.find((draft) => draft.id === activeDraftIdRef.current)
-            : null;
-        const record: FileDraft = {
-          id: existing?.id ?? newDraftId(),
-          name: existing?.name ?? AUTOSAVE_NAME,
-          path: initialData.path,
-          projectId,
-          content: editTextRef.current,
-          baseVersion: response.version,
-          savedAt: new Date().toISOString(),
-        };
-        const stored = await enqueue(() => upsertDraft(projectId, initialData.path, record));
-        applyStored(stored);
         baseVersionRef.current = response.version;
+        // 队列真正执行时取最新编辑文本；缓存只存已发送的正文，草稿保留后续输入。
+        let persistedContent = submittedContent;
+        const stored = await enqueue(() => {
+          persistedContent = editTextRef.current;
+          return upsertDraft(projectId, initialData.path, {
+            id: submittedId,
+            name: submittedDraft?.name ?? AUTOSAVE_NAME,
+            path: initialData.path,
+            projectId,
+            content: persistedContent,
+            baseVersion: response.version,
+            savedAt: new Date().toISOString(),
+          });
+        });
+        applyStored(stored);
+        setLocalDraftState(persistedContent === editTextRef.current ? 'saved' : 'pending');
         setDiagnostics(null);
         setConflictVersion(null);
-        setEditState('synced');
-        setTimeout(() => {
-          setMode('read');
-          setEditState('clean');
-          setEditText(updated.content);
-        }, 900);
+        if (editTextRef.current === submittedContent) {
+          setEditState('synced');
+          const confirmedRevision = editRevisionRef.current;
+          savedModeTimer.current = setTimeout(() => {
+            if (editRevisionRef.current !== confirmedRevision || savingRef.current) return;
+            setMode('read');
+            setEditState('clean');
+          }, 900);
+        } else {
+          setEditState('dirty');
+        }
       } catch (error) {
         if (error instanceof PocketCodeError && error.code === 'VERSION_CONFLICT') {
           setConflictVersion(
             (error.details?.current_version as string | undefined) ?? null,
           );
           setEditState('conflict');
+          await flushActiveDraft();
         } else if (error instanceof PocketCodeError && error.code === 'OFFLINE') {
-          await flushActiveDraft();
+          const retained = await flushActiveDraft();
           setEditState('dirty');
-          setMessage('当前离线，无法保存到电脑；草稿已保留，联网后再保存。');
+          if (retained) setMessage('当前离线，无法保存到电脑；草稿已保留，联网后再保存。');
         } else {
-          await flushActiveDraft();
+          const retained = await flushActiveDraft();
           setEditState('dirty');
-          setMessage(error instanceof PocketCodeError ? error.message : '保存失败');
+          if (retained) setMessage(error instanceof PocketCodeError ? error.message : '电脑操作或本地草稿保存失败，请确认内容后重试');
         }
       } finally {
+        savingRef.current = false;
         setSaving(false);
       }
     },
     [
       applyStored,
       cancelPendingAutosave,
+      cancelSavedModeTimer,
       client,
       data,
       enqueue,
       flushActiveDraft,
       initialData.path,
       projectId,
+      revoked,
+      switchBusy,
     ],
   );
 
@@ -359,7 +428,7 @@ export function FileScreen({
     if (confirmed) void saveToPc(conflictVersion);
   };
 
-  /** 阅读页「刷新电脑版本」：只更新内容与基线，**不动任何草稿**（S4a2）。 */
+  /** 阅读数据与草稿编辑缓冲区分开；刷新不改变活动草稿正文或来源版本。 */
   const reloadFromPc = async (): Promise<boolean> => {
     if (!client || revoked) {
       setMessage('无法从电脑加载最新版本');
@@ -370,10 +439,13 @@ export function FileScreen({
       const fresh = await client.readFile(projectId, initialData.path);
       setData(fresh);
       void saveCachedFile(projectId, fresh);
-      setEditText(fresh.content);
-      baseVersionRef.current = fresh.version;
+      if (!activeDraftIdRef.current) {
+        setEditText(fresh.content);
+        editTextRef.current = fresh.content;
+        baseVersionRef.current = fresh.version;
+        setEditState('clean');
+      }
       setConflictVersion(null);
-      setEditState('clean');
       return true;
     } catch (cause) {
       setMessage(cause instanceof PocketCodeError ? cause.message : '加载失败');
@@ -386,26 +458,40 @@ export function FileScreen({
   /** 冲突框「放弃修改，加载电脑版」：丢弃的是**当前活动草稿**（其余命名
    *  草稿保留在草稿箱，可随时删除），然后加载电脑最新内容。 */
   const discardAndReload = async () => {
-    if (!client || revoked) {
+    if (!client || revoked || savingRef.current) {
       setMessage('无法从电脑加载最新版本');
       return;
     }
     cancelPendingAutosave();
-    const activeId = activeDraftIdRef.current;
-    if (activeId) {
-      const stored = await enqueue(() =>
-        removeDraft(projectId, initialData.path, activeId),
-      );
+    setSwitchBusy(true);
+    try {
+      // 先取得电脑版；网络失败时不得先删除唯一的本地修改。
+      const fresh = await client.readFile(projectId, initialData.path);
+      const activeId = activeDraftIdRef.current;
+      const stored = activeId
+        ? await enqueue(() => removeDraft(projectId, initialData.path, activeId))
+        : { activeId: null, drafts: [] };
       applyStored(stored);
+      const next = stored.drafts.find((draft) => draft.id === stored.activeId);
+      setData(fresh);
+      void saveCachedFile(projectId, fresh).catch(() => undefined);
+      setEditText(next?.content ?? fresh.content);
+      editTextRef.current = next?.content ?? fresh.content;
+      baseVersionRef.current = next?.baseVersion ?? fresh.version;
+      setEditState(next && next.content !== fresh.content ? 'dirty' : 'clean');
+      setConflictVersion(null);
+      setDiagnostics(null);
+      setMode('read');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '加载失败，草稿仍保留');
+    } finally {
+      setSwitchBusy(false);
     }
-    setDiagnostics(null);
-    const reloaded = await reloadFromPc();
-    if (reloaded) setMode('read');
   };
 
   // ---- 草稿切换 / 新建 / 删除 ----
   const switchDraft = async (id: string) => {
-    if (id === activeDraftIdRef.current || switchBusy) return;
+    if (id === activeDraftIdRef.current || switchBusy || savingRef.current) return;
     cancelPendingAutosave();
     const target = draftsRef.current.find((draft) => draft.id === id);
     if (!target) return;
@@ -416,7 +502,7 @@ export function FileScreen({
         activeDraftIdRef.current &&
         (editStateRef.current === 'dirty' || editStateRef.current === 'conflict')
       ) {
-        await flushActiveDraft();
+        if (!(await flushActiveDraft())) return;
       }
       // 2) 再原子切换活动草标
       const stored = await enqueue(() => setActiveDraft(projectId, initialData.path, id));
@@ -433,7 +519,7 @@ export function FileScreen({
   };
 
   const createDraft = async () => {
-    if (switchBusy) return;
+    if (switchBusy || savingRef.current) return;
     const name = window.prompt('草稿名称（如：异常处理实验 A）', `草稿 ${drafts.length + 1}`);
     if (name === null) return;
     cancelPendingAutosave();
@@ -444,7 +530,7 @@ export function FileScreen({
         activeDraftIdRef.current &&
         (editStateRef.current === 'dirty' || editStateRef.current === 'conflict')
       ) {
-        await flushActiveDraft();
+        if (!(await flushActiveDraft())) return;
       }
       const draft: FileDraft = {
         id: newDraftId(),
@@ -465,7 +551,7 @@ export function FileScreen({
 
   const deleteActiveDraft = async () => {
     const id = activeDraftIdRef.current;
-    if (!id || switchBusy) return;
+    if (!id || switchBusy || savingRef.current) return;
     if (!window.confirm('删除当前草稿？其未保存的修改将丢失。')) return;
     cancelPendingAutosave();
     setSwitchBusy(true);
@@ -491,7 +577,7 @@ export function FileScreen({
   const renameActiveDraft = async () => {
     const id = activeDraftIdRef.current;
     const current = draftsRef.current.find((draft) => draft.id === id);
-    if (!id || !current || switchBusy) return;
+    if (!id || !current || switchBusy || savingRef.current) return;
     const name = window.prompt('重命名草稿', current.name);
     if (name === null) return;
     setSwitchBusy(true);
@@ -505,19 +591,35 @@ export function FileScreen({
     }
   };
 
+  const exitEditToRead = useCallback(async () => {
+    if (savingRef.current) return;
+    cancelPendingAutosave();
+    cancelSavedModeTimer();
+    if (editStateRef.current === 'dirty' || editStateRef.current === 'conflict') {
+      if (!(await flushActiveDraft())) return;
+    }
+    setMode('read');
+  }, [cancelPendingAutosave, cancelSavedModeTimer, flushActiveDraft]);
+
   // ---- Android 返回键：编辑态先退出编辑（草稿保留），阅读态交给上级 ----
   useEffect(() => {
     registerBackGuard(() => {
+      if (contextQuery) {
+        setContextQuery(null);
+        return true;
+      }
+      if (drawer) {
+        setDrawer(null);
+        return true;
+      }
       if (mode === 'edit') {
-        cancelPendingAutosave();
-        void flushActiveDraft();
-        setMode('read');
+        void exitEditToRead();
         return true;
       }
       return false;
     });
     return () => registerBackGuard(null);
-  }, [mode, flushActiveDraft, registerBackGuard, cancelPendingAutosave]);
+  }, [mode, exitEditToRead, registerBackGuard, contextQuery, drawer]);
 
   const lineCount = (mode === 'edit' ? editText : data.content).split('\n').length;
   const readOnlyBlocked =
@@ -533,8 +635,10 @@ export function FileScreen({
 
   // 阅读/编辑共用：CodeEditor 挂载时的初始滚动位置。
   // 「返回原位置」优先；否则用户本次已滚动过用最新位置，否则用磁盘恢复值。
-  const initialReadTop = returnScrollTop
+  const initialReadTop = returnScrollTop !== null
     ? returnScrollTop
+    : initialLine && !userScrolledRef.current
+      ? null
     : userScrolledRef.current
       ? lastReadTopRef.current
       : savedReadTop;
@@ -661,8 +765,56 @@ export function FileScreen({
     [],
   );
 
+  const openContext = useCallback((view: ContextView = 'related', symbol?: string, line?: number) => {
+    if (!isPythonFile || !client || !online || revoked) {
+      setMessage('Python 跨文件关联需要连接电脑；离线仍可使用本文件的大纲与查找。');
+      return;
+    }
+    setDrawer(null);
+    setContextQuery({ view, request: {
+      path: data.path, symbol, line,
+      ...(mode === 'edit' ? { content: editTextRef.current, source: 'draft' as const }
+        : fromCache ? { content: data.content, source: 'cache' as const } : {}),
+    } });
+  }, [isPythonFile, client, online, revoked, data, mode, fromCache]);
+
+  const navigateContext = async (location: PythonLocation | PythonRelatedFile) => {
+    if (!client || !online || revoked) throw new Error('电脑不可用，暂时无法跳转。');
+    if (location.path === data.path && contextQuery?.request.content !== undefined) {
+      const visibleText = mode === 'edit' ? editTextRef.current : data.content;
+      if (visibleText !== contextQuery.request.content) throw new Error('当前正文已变化，请重新分析后定位。');
+      jumpToLine(location.line);
+      setContextQuery(null);
+      return;
+    }
+    const fresh = await client.readFile(projectId, location.path);
+    if (fresh.version !== location.version) throw new Error('目标文件在分析后已变化，请重新分析后定位。');
+    void saveCachedFile(projectId, fresh).catch(() => undefined);
+    if (location.path === data.path) {
+      setData(fresh);
+      if (!activeDraftIdRef.current) {
+        setEditText(fresh.content);
+        baseVersionRef.current = fresh.version;
+      }
+      jumpToLine(location.line);
+      setContextQuery(null);
+    } else {
+      if (!onOpenRelated) throw new Error('当前页面无法打开跨文件导航。');
+      cancelPendingAutosave();
+      if (editStateRef.current === 'dirty' || editStateRef.current === 'conflict') {
+        if (!(await flushActiveDraft())) throw new Error('请先处理本地草稿保存失败，再跳转文件。');
+      }
+      await positionSaverRef.current.flush();
+      onOpenRelated(fresh, location.line, { data, mode });
+    }
+  };
+
   const jumpToDefinitions = useCallback(
     (symbol: string) => {
+      if (isPythonFile && online && !revoked && client) {
+        openContext('definitions', symbol, drawer?.type === 'symbol' ? drawer.line : undefined);
+        return;
+      }
       const defs = findDefinitions(data.content, data.path, symbol);
       if (defs.length === 0) {
         patchSymbolDrawer({
@@ -676,11 +828,15 @@ export function FileScreen({
       }
       patchSymbolDrawer({ results: { kind: 'defs', lines: defs }, message: null });
     },
-    [data.content, data.path, jumpToLine, patchSymbolDrawer],
+    [data.content, data.path, jumpToLine, patchSymbolDrawer, isPythonFile, online, revoked, client, openContext, drawer],
   );
 
   const showReferences = useCallback(
     (symbol: string) => {
+      if (isPythonFile && online && !revoked && client) {
+        openContext('references', symbol, drawer?.type === 'symbol' ? drawer.line : undefined);
+        return;
+      }
       const refs = findReferences(data.content, symbol);
       if (refs.length === 0) {
         patchSymbolDrawer({ message: `本文件内没有「${symbol}」的其他出现` });
@@ -688,7 +844,7 @@ export function FileScreen({
       }
       patchSymbolDrawer({ results: { kind: 'refs', lines: refs }, message: null });
     },
-    [data.content, patchSymbolDrawer],
+    [data.content, patchSymbolDrawer, isPythonFile, online, revoked, client, openContext, drawer],
   );
 
   const copySymbol = useCallback(async (symbol: string) => {
@@ -703,6 +859,11 @@ export function FileScreen({
   // ---- 底部抽屉与返回原位置（阅读模式共用）----
   const symbolIcon = (symbol: OutlineSymbol) =>
     symbol.kind === 'class' ? '◆' : symbol.kind === 'method' ? '‣' : symbol.kind === 'heading' ? '§' : 'ƒ';
+
+  const contextJsx = contextQuery && client ? <PythonContextPanel
+    client={client} projectId={projectId} projectName={projectName ?? projectId} query={contextQuery}
+    online={online} revoked={revoked} onClose={() => setContextQuery(null)} onNavigate={navigateContext}
+  /> : null;
 
   const drawerJsx = drawer ? (
     <>
@@ -794,6 +955,8 @@ export function FileScreen({
               >
                 复制符号
               </button>
+              {isPythonFile ? <button type="button" className="btn" disabled={!online || revoked}
+                onClick={() => openContext('related', drawer.symbol, drawer.line)}>关联分享</button> : null}
             </div>
             {drawer.message ? <p className="hint hint--error">{drawer.message}</p> : null}
             {drawer.results ? (
@@ -855,19 +1018,13 @@ export function FileScreen({
     void saveWrapPref(next);
   };
 
-  const exitEditToRead = () => {
-    cancelPendingAutosave();
-    void flushActiveDraft();
-    setMode('read');
-  };
-
   // 共享片段：草稿选择器与冲突处理块（普通布局与全屏编辑都用）
   const draftsSelect = (
     <select
       className="editbar__select"
       value={activeDraftId ?? ''}
       onChange={(event) => void switchDraft(event.target.value)}
-      disabled={switchBusy}
+      disabled={switchBusy || saving}
     >
       {drafts.length === 0 ? <option value="">{AUTOSAVE_NAME}</option> : null}
       {drafts.map((draft) => (
@@ -949,6 +1106,8 @@ export function FileScreen({
               >
                 大纲
               </button>
+              {isPythonFile ? <button type="button" className="immersive-bar__btn"
+                onClick={() => { setMenuVisible(false); openContext(); }} disabled={!online || revoked || saving}>关联</button> : null}
               <button
                 type="button"
                 className="immersive-bar__btn"
@@ -997,6 +1156,7 @@ export function FileScreen({
           </div>
         ) : null}
         {drawerJsx}
+        {contextJsx}
       </section>
     );
   }
@@ -1011,7 +1171,7 @@ export function FileScreen({
             type="button"
             className="immersive-bar__btn"
             onClick={exitEditToRead}
-            disabled={switchBusy}
+            disabled={switchBusy || saving}
           >
             ✓ 完成
           </button>
@@ -1019,7 +1179,7 @@ export function FileScreen({
           <span
             className={`immersive-bar__state ${editState === 'conflict' ? 'hint--error' : ''}`}
           >
-            {IMMERSIVE_STATE_TEXT[editState]}
+            {localDraftState === 'error' ? '本地保存失败' : IMMERSIVE_STATE_TEXT[editState]}
             {switchBusy ? '…' : ''}
           </span>
           <button
@@ -1054,7 +1214,7 @@ export function FileScreen({
               type="button"
               className="immersive-bar__btn"
               onClick={() => void createDraft()}
-              disabled={switchBusy}
+              disabled={switchBusy || saving}
             >
               ＋草稿
             </button>
@@ -1062,7 +1222,7 @@ export function FileScreen({
               type="button"
               className="immersive-bar__btn"
               onClick={() => void renameActiveDraft()}
-              disabled={!activeDraftId || switchBusy}
+              disabled={!activeDraftId || switchBusy || saving}
             >
               重命名
             </button>
@@ -1070,7 +1230,7 @@ export function FileScreen({
               type="button"
               className="immersive-bar__btn"
               onClick={() => void deleteActiveDraft()}
-              disabled={drafts.length === 0 || switchBusy}
+              disabled={drafts.length === 0 || switchBusy || saving}
             >
               删除草稿
             </button>
@@ -1090,6 +1250,16 @@ export function FileScreen({
                 {checking ? '检查中…' : '检查语法'}
               </button>
             ) : null}
+            {isPythonFile ? <>
+              <button type="button" className="immersive-bar__btn" disabled={!online || revoked || saving}
+                onClick={() => openContext()}>关联草稿</button>
+              <button type="button" className="immersive-bar__btn" disabled={!online || revoked || saving}
+                onClick={() => {
+                  const cursor = cursorSymbolRef.current;
+                  if (cursor) openContext('definitions', cursor.symbol, cursor.line);
+                  else setMessage('请先将光标放在符号旁，再打开代码操作。');
+                }}>代码操作</button>
+            </> : null}
             <button
               type="button"
               className="immersive-bar__btn"
@@ -1113,6 +1283,7 @@ export function FileScreen({
           scrollRequest={scrollRequest}
           diagnostics={diagnostics ?? undefined}
           onDocChange={onEditChange}
+          onCursorSymbol={(value) => { cursorSymbolRef.current = value; }}
           onBlur={() => {
             cancelPendingAutosave();
             if (editStateRef.current === 'dirty' || editStateRef.current === 'conflict') {
@@ -1128,6 +1299,7 @@ export function FileScreen({
         {!online ? (
           <p className="hint immersive-hint">离线：可继续编辑，草稿保留，联网后保存。</p>
         ) : null}
+        {contextJsx}
       </section>
     );
   }
@@ -1210,6 +1382,8 @@ export function FileScreen({
             >
               大纲
             </button>
+            {isPythonFile ? <button type="button" className="btn" disabled={!online || revoked || saving}
+              onClick={() => openContext()}>智能关联</button> : null}
             <button
               type="button"
               className="btn"
@@ -1247,7 +1421,7 @@ export function FileScreen({
               type="button"
               className="editbar__btn"
               onClick={() => void createDraft()}
-              disabled={switchBusy}
+              disabled={switchBusy || saving}
             >
               ＋草稿
             </button>
@@ -1255,7 +1429,7 @@ export function FileScreen({
               type="button"
               className="editbar__btn"
               onClick={() => void renameActiveDraft()}
-              disabled={!activeDraftId || switchBusy}
+              disabled={!activeDraftId || switchBusy || saving}
             >
               重命名
             </button>
@@ -1263,13 +1437,13 @@ export function FileScreen({
               type="button"
               className="editbar__btn"
               onClick={() => void deleteActiveDraft()}
-              disabled={drafts.length === 0 || switchBusy}
+              disabled={drafts.length === 0 || switchBusy || saving}
             >
               删除
             </button>
           </div>
           <p className={`hint ${editState === 'conflict' ? 'hint--error' : ''}`}>
-            {EDIT_STATE_TEXT[editState]}
+            {EDIT_STATE_TEXT[editState]} · {localDraftState === 'saved' ? '草稿已存本机' : localDraftState === 'pending' ? '草稿待保存' : '本地草稿保存失败'}
             {switchBusy ? ' · 正在切换…' : ''}
           </p>
           {conflictPanel}
@@ -1282,6 +1456,7 @@ export function FileScreen({
             scrollRequest={scrollRequest}
             diagnostics={diagnostics ?? undefined}
             onDocChange={onEditChange}
+            onCursorSymbol={(value) => { cursorSymbolRef.current = value; }}
             onBlur={() => {
               cancelPendingAutosave();
               if (editStateRef.current === 'dirty' || editStateRef.current === 'conflict') {
@@ -1290,6 +1465,16 @@ export function FileScreen({
             }}
           />
           <div className="btnrow">
+            {isPythonFile ? <>
+              <button type="button" className="btn" disabled={!online || revoked || saving}
+                onClick={() => openContext()}>关联草稿</button>
+              <button type="button" className="btn" disabled={!online || revoked || saving}
+                onClick={() => {
+                  const cursor = cursorSymbolRef.current;
+                  if (cursor) openContext('definitions', cursor.symbol, cursor.line);
+                  else setMessage('请先将光标放在符号旁，再打开代码操作。');
+                }}>代码操作</button>
+            </> : null}
             {isPythonFile ? (
               <button
                 type="button"
@@ -1320,6 +1505,7 @@ export function FileScreen({
           {!online ? <p className="hint">当前离线：可以继续编辑，草稿会保留，联网后再保存。</p> : null}
         </>
       )}
+      {contextJsx}
     </section>
   );
 }

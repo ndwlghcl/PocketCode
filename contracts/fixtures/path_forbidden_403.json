@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "PATH_FORBIDDEN",
+    "message": "路径越出授权项目根目录",
+    "request_id": "8b2280bf-a367-4f9a-8b79-a8ced421dd05"
+  }
+}

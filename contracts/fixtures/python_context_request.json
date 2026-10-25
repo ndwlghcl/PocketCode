@@ -1,0 +1,7 @@
+{
+  "path": "pkg/main.py",
+  "symbol": "make",
+  "line": 4,
+  "source": "draft",
+  "content": "from .helpers import build as make\n\ndef run():\n    return make()\n"
+}
