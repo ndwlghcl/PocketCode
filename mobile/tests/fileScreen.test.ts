@@ -62,6 +62,7 @@ vi.mock('../src/storage/readPositionStore', () => ({
   loadReadPosition: async () => h.readTop === null ? null : { scrollTop: h.readTop },
 }));
 vi.mock('../src/storage/uiPrefs', () => ({ loadWrapPref: async () => true, saveWrapPref: async () => {} }));
+vi.mock('../src/app/Appearance', () => ({ useAppearance: () => ({ prefs: { wrap: true }, update() {} }) }));
 vi.mock('../src/app/useConnection', () => ({ useConnection: () => ({
   status: { state: 'online', latencyMs: 1 },
   pairing: { baseUrl: 'https://test', deviceToken: 'token', fingerprint: 'sha256:' + '1'.repeat(64), serverName: 'test' },
@@ -91,15 +92,13 @@ function nodes(node: any): any[] {
 }
 const text = (node: any): string => typeof node === 'string' ? node : Array.isArray(node) ? node.map(text).join('') : node?.props ? text(node.props.children) : '';
 const button = (label: string) => {
-  const found = nodes(tree).find((n) => n.type === 'button' && text(n).trim() === label);
+  const found = nodes(tree).find((n) => (n.type === 'button' || n.type?.name === 'MenuItem') && (n.props['aria-label'] ?? text(n).trim()) === label);
   if (!found) throw new Error('Missing button ' + label);
   return found.props;
 };
 const editor = () => nodes(tree).find((n) => n.type === 'mock-editor').props;
 const edit = async () => {
-  // Default read view hides its menu until tapped.
-  nodes(tree).find((n) => n.props?.className === 'immersive-wrap').props.onClick();
-  await drain(); button('✎ 编辑').onClick(); await drain();
+  button('编辑').onClick(); await drain();
 };
 beforeEach(() => {
   vi.useFakeTimers();
@@ -141,12 +140,12 @@ test('reading refresh preserves the active draft through editing', async () => {
   await upsertDraft('p', 'a.py', { id: 'draft1', name: 'idea', path: 'a.py', projectId: 'p', content: 'MY PRECIOUS IDEA', baseVersion: data.version, savedAt: data.mtime });
   props.client.readFile = async () => ({ ...data, content: 'PC NEW', version: 'sha256:' + '3'.repeat(64) });
   render(); await drain();
-  nodes(tree).find((n) => n.props?.className === 'immersive-wrap').props.onClick(); await drain();
+  button('更多操作').onClick(); await drain();
   button('刷新').onClick(); await drain();
   expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('MY PRECIOUS IDEA');
-  button('✎ 编辑').onClick(); await drain();
+  button('编辑').onClick(); await drain();
   expect(editor().doc).toBe('MY PRECIOUS IDEA');
-  button('✓ 完成').onClick(); await drain();
+  button('完成编辑').onClick(); await drain();
   expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('MY PRECIOUS IDEA');
 });
 
@@ -169,11 +168,11 @@ test('failed autosave is visible and cannot silently close the edited buffer', a
   editor().onDocChange('KEEP MY IDEA'); await drain();
   await vi.advanceTimersByTimeAsync(900); await drain();
   expect(nodes(tree).some((n) => text(n).includes('本地草稿保存失败'))).toBe(true);
-  button('✓ 完成').onClick(); await drain();
+  button('完成编辑').onClick(); await drain();
   expect(editor().readOnly).toBe(false);
   expect(editor().doc).toBe('KEEP MY IDEA');
   h.failWrites = false;
-  button('✓ 完成').onClick(); await drain();
+  button('完成编辑').onClick(); await drain();
   expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('KEEP MY IDEA');
   expect(editor().readOnly).toBe(true);
 });
@@ -182,7 +181,7 @@ test('related draft analysis captures unsaved text without submitting to the PC'
   props.client.saveFile = vi.fn();
   render(); await drain(); await edit();
   editor().onDocChange('from tools import build\nbuild()\n'); await drain();
-  button('⋯').onClick(); await drain();
+  button('更多操作').onClick(); await drain();
   button('关联草稿').onClick(); await drain();
   const panel = nodes(tree).find((node) => node.type?.name === 'PythonContextPanel').props;
   expect(panel.query.request.content).toBe('from tools import build\nbuild()\n');
@@ -196,7 +195,7 @@ test('cross-file navigation refuses stale results and preserves the outgoing dra
   props.onOpenRelated = vi.fn();
   render(); await drain(); await edit();
   editor().onDocChange('MY CURRENT IDEA'); await drain();
-  button('⋯').onClick(); await drain(); button('关联草稿').onClick(); await drain();
+  button('更多操作').onClick(); await drain(); button('关联草稿').onClick(); await drain();
   let panel = nodes(tree).find((node) => node.type?.name === 'PythonContextPanel').props;
   await expect(panel.onNavigate({ path: 'tools.py', line: 1, version: data.version })).rejects.toThrow('已变化');
   expect(props.onOpenRelated).not.toHaveBeenCalled();
@@ -233,4 +232,27 @@ test('an explicit target line takes priority over an asynchronously loaded old r
   render(); await drain();
   expect(editor().scrollRequest.line).toBe(7);
   expect(editor().initialScrollTop).toBeNull();
+});
+
+test('read-mode diagnostics inspect the displayed PC content rather than a different local draft', async () => {
+  await upsertDraft('p', 'a.py', { id: 'draft1', name: 'idea', path: 'a.py', projectId: 'p', content: 'DIFFERENT DRAFT', baseVersion: data.version, savedAt: data.mtime });
+  props.client.diagnose = vi.fn(async () => ({ diagnostics: [], analyzer: 'ast' }));
+  render(); await drain();
+  button('更多操作').onClick(); await drain();
+  button('检查语法与诊断').onClick(); await drain();
+  expect(props.client.diagnose).toHaveBeenCalledWith('p', { path: 'a.py', content: 'PC OLD' });
+  expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('DIFFERENT DRAFT');
+});
+
+test('returning from a tool menu leaves the edited buffer open and the next back saves it', async () => {
+  props.registerBackGuard = vi.fn();
+  render(); await drain(); await edit();
+  editor().onDocChange('KEEP THIS BUFFER'); await drain();
+  button('更多操作').onClick(); await drain();
+  expect(props.registerBackGuard.mock.calls.at(-1)[0]()).toBe(true); await drain();
+  expect(editor().readOnly).toBe(false);
+  expect(editor().doc).toBe('KEEP THIS BUFFER');
+  expect(props.registerBackGuard.mock.calls.at(-1)[0]()).toBe(true); await drain();
+  expect(editor().readOnly).toBe(true);
+  expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('KEEP THIS BUFFER');
 });

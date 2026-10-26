@@ -79,4 +79,13 @@ describe('cacheStore（项目/目录/文件缓存，原生磁盘 KV）', () => {
     await storage.set('pc.cache.projects', '"not-an-object"');
     expect(await loadCachedProjects(storage)).toBeNull();
   });
+
+  it('文件超限或磁盘写入失败返回 false，供批量缓存统计真实结果', async () => {
+    const data = { path: 'a.py', content: 'x'.repeat(1_000_001) } as FileContentResponse;
+    expect(await saveCachedFile('p', data, storage)).toBe(false);
+    expect(await loadCachedFile('p', 'a.py', storage)).toBeNull();
+    storage.set = async () => { throw new Error('disk full'); };
+    expect(await saveCachedFile('p', { ...data, content: 'small' }, storage)).toBe(false);
+    expect(await saveCachedManifest('p', { revision: 1, root: { type: 'dir', name: '', path: '', children: [] } }, storage)).toBe(false);
+  });
 });

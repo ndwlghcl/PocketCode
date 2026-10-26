@@ -50,11 +50,13 @@ async function writeJson(
   key: string,
   value: unknown,
   storage: KVStorage = diskStorage,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await storage.set(key, JSON.stringify(value));
+    return true;
   } catch {
     // 空间不足等场景：缓存失败不阻塞功能
+    return false;
   }
 }
 
@@ -101,8 +103,8 @@ export async function saveCachedManifest(
   projectId: string,
   manifest: { revision: number; root: ManifestDir },
   storage: KVStorage = diskStorage,
-): Promise<void> {
-  await writeJson(
+): Promise<boolean> {
+  return writeJson(
     `${MANIFEST_PREFIX}${projectId}`,
     {
       fetchedAt: new Date().toISOString(),
@@ -137,9 +139,9 @@ export async function saveCachedFile(
   projectId: string,
   data: FileContentResponse,
   storage: KVStorage = diskStorage,
-): Promise<void> {
-  if (data.content.length > MAX_CACHED_FILE_CHARS) return;
-  await writeJson(
+): Promise<boolean> {
+  if (data.content.length > MAX_CACHED_FILE_CHARS) return false;
+  return writeJson(
     fileKey(projectId, data.path),
     { fetchedAt: new Date().toISOString(), data },
     storage,

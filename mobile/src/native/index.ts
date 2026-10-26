@@ -120,11 +120,8 @@ export const diskStorage: KVStorage = {
       await PocketCodeBridge.dataSet({ key, value });
       return;
     }
-    try {
-      localStorage.setItem(key, value);
-    } catch {
-      // 开发模式存储失败不阻塞
-    }
+    // 向调用方报告失败；草稿与批量缓存必须知道是否真正落盘。
+    localStorage.setItem(key, value);
   },
   async get(key: string): Promise<string | null> {
     if (Capacitor.isNativePlatform()) {

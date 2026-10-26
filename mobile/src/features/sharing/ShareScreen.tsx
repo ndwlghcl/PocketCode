@@ -1,3 +1,5 @@
+import { ActionSheet } from '../../ui/Controls';
+import { Icon } from '../../ui/Icon';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { ManifestDir, ProjectSummary } from '../../api/types';
@@ -239,7 +241,7 @@ export function ShareScreen({ client, project, online, revoked, onBack }: Props)
     <section>
       <div className="navrow">
         <button type="button" className="navrow__back" onClick={onBack}>
-          ‹ 返回
+          <Icon name="back" size={20} /><span className="visually-hidden">返回目录</span>
         </button>
         <div className="navrow__stack">
           <span className="navrow__title">分享 · {project.name}</span>
@@ -286,9 +288,9 @@ export function ShareScreen({ client, project, online, revoked, onBack }: Props)
       <ul className="cardlist">
         {visible.map((file) => (
           <li key={file.path}>
-            <button type="button" className="cardlist__item" onClick={() => toggle(file.path)}>
+            <button type="button" className="cardlist__item" aria-pressed={selected.has(file.path)} onClick={() => toggle(file.path)}>
               <span className="cardlist__name sharecheck__path">
-                {selected.has(file.path) ? '☑' : '☐'} {file.path}
+                <Icon name={selected.has(file.path) ? 'check' : 'file'} size={17} /> {file.path}
               </span>
               <span className="cardlist__meta">{file.size} B</span>
             </button>
@@ -297,10 +299,7 @@ export function ShareScreen({ client, project, online, revoked, onBack }: Props)
       </ul>
 
       {preview ? (
-        <>
-          <div className="sheet-overlay" onClick={() => setPreview(null)} />
-          <div className="sheet">
-            <div className="sheet__handle" />
+        <ActionSheet title="分享预览" onClose={() => setPreview(null)}>
             <p className="sheet__title">分享预览（{preview.files.length} 个文件）</p>
             <p className="sheet__empty">
               来源：{preview.source === 'pc' ? '电脑当前版本' : '本地缓存（可能过期）'}
@@ -338,14 +337,14 @@ export function ShareScreen({ client, project, online, revoked, onBack }: Props)
             ) : null}
             <div className="btnrow">
               <button type="button" className="btn" onClick={() => void doCopy()}>
-                复制全文
+                <Icon name="copy" size={16} /> 复制全文
               </button>
               <button
                 type="button"
                 className="btn btn--primary"
                 onClick={() => void doShare()}
               >
-                系统分享
+                <Icon name="share" size={16} /> 系统分享
               </button>
             </div>
             <div className="btnrow">
@@ -353,8 +352,7 @@ export function ShareScreen({ client, project, online, revoked, onBack }: Props)
                 取消
               </button>
             </div>
-          </div>
-        </>
+        </ActionSheet>
       ) : null}
     </section>
   );

@@ -117,6 +117,14 @@ export class PocketCodeClient {
     return this.request('GET', '/v1/trash');
   }
 
+  async deleteTrashEntry(trashId: string): Promise<void> {
+    return this.request('DELETE', `/v1/trash/${encodeURIComponent(trashId)}`);
+  }
+
+  async clearTrash(): Promise<void> {
+    return this.request('DELETE', '/v1/trash');
+  }
+
   async searchProject(projectId: string, query: string): Promise<SearchResponse> {
     const params = new URLSearchParams({ q: query });
     return this.request(

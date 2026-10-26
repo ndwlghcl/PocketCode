@@ -118,6 +118,18 @@ describe('PocketCodeClient（S2c：传输层 + 指纹）', () => {
     await expect(client.restoreTrash('t-id')).resolves.toBeUndefined();
   });
 
+  it('永久删除和清空回收区使用 DELETE，支持 204 空响应', async () => {
+    const transport = vi.fn(async (_req: TransportRequest) => ({ status: 204, bodyText: '' }));
+    const client = clientOf(transport);
+    await expect(client.deleteTrashEntry('t/id')).resolves.toBeUndefined();
+    await expect(client.clearTrash()).resolves.toBeUndefined();
+    expect(transport.mock.calls.map(([req]) => [req.method, req.url])).toEqual([
+      ['DELETE', 'https://192.168.43.10:8765/v1/trash/t%2Fid'],
+      ['DELETE', 'https://192.168.43.10:8765/v1/trash'],
+    ]);
+    expect(transport.mock.calls.every(([req]) => req.headers?.Authorization === 'Bearer token-abc')).toBe(true);
+  });
+
   it('listTrash 请求 GET /v1/trash 并解析条目列表（S3c）', async () => {
     const transport = vi.fn(async (_req: TransportRequest) =>
       jsonResult(200, {

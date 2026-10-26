@@ -1,7 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './app/App';
+import { AppearanceProvider } from './app/Appearance';
 import './app/theme.css';
+import './app/nightfall.css';
 
 const container = document.getElementById('root');
 if (!container) {
@@ -10,6 +12,6 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <AppearanceProvider><App /></AppearanceProvider>
   </StrictMode>,
 );

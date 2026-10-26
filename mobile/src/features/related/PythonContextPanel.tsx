@@ -1,3 +1,4 @@
+import { ActionSheet, IconButton } from '../../ui/Controls';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PythonContextRequest, PythonContextResponse, PythonLocation, PythonRelatedFile } from '../../api/types';
 import { PocketCodeClient, PocketCodeError } from '../../api/client';
@@ -108,15 +109,9 @@ export function PythonContextPanel({ client, projectId, projectName, query, onli
   const sensitive = new Set(detectSensitivePaths(paths).map((item) => item.path));
   const previewText = result && preview ? contextBundleText(projectName, result, preview, query.request) : '';
 
-  return <>
-    <div className="sheet-overlay" onClick={onClose} />
-    <section className="sheet context-sheet" role="dialog" aria-label="Python 智能关联">
-      <div className="sheet__handle" />
+  return <ActionSheet title={`Python 智能关联${query.request.symbol ? ` · ${query.request.symbol}` : ''}`} onClose={onClose}>
       <div className="navrow">
-        <strong>Python 智能关联{query.request.symbol ? ` · ${query.request.symbol}` : ''}</strong>
-        <button type="button" className="btn" aria-label="重新分析" title="重新分析"
-          onClick={() => void load()} disabled={busy || !usable}>↻</button>
-        <button type="button" className="btn" onClick={onClose}>关闭</button>
+        <span className="hint">静态分析 · 按需展开</span><IconButton icon="refresh" label="重新分析" onClick={() => void load()} disabled={busy || !usable} />
       </div>
       <p className="hint">{query.request.path} · 仅静态分析，点击结果才会跳转。</p>
       <div className="btnrow context-tabs">
@@ -166,6 +161,5 @@ export function PythonContextPanel({ client, projectId, projectName, query, onli
           </div>
         </div> : null}
       </> : null}
-    </section>
-  </>;
+  </ActionSheet>;
 }

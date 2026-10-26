@@ -21,7 +21,9 @@ import {
   createPositionSaver,
   loadReadPosition,
 } from '../../storage/readPositionStore';
-import { loadWrapPref, saveWrapPref } from '../../storage/uiPrefs';
+import { useAppearance } from '../../app/Appearance';
+import { Icon } from '../../ui/Icon';
+import { ActionSheet, MenuItem } from '../../ui/Controls';
 import {
   loadDrafts,
   newDraftId,
@@ -83,8 +85,8 @@ const EDIT_STATE_TEXT: Record<EditState, string> = {
 
 /** 全屏编辑顶栏用的短状态（空间有限）。 */
 const IMMERSIVE_STATE_TEXT: Record<EditState, string> = {
-  clean: '✓',
-  dirty: '未保存',
+  clean: '已存本机',
+  dirty: '待同步',
   saving: '保存中',
   synced: '已同步',
   conflict: '冲突',
@@ -127,12 +129,16 @@ export function FileScreen({
   const [saving, setSaving] = useState(false);
   const [switchBusy, setSwitchBusy] = useState(false);
   const [localDraftState, setLocalDraftState] = useState<'pending' | 'saved' | 'error'>('saved');
-  const [wrap, setWrap] = useState(true);
+  const { prefs, update: updateAppearance } = useAppearance();
+  const wrap = prefs.wrap;
   /** 上次关闭 App 时的阅读位置（打开文件后异步读出）。 */
   const [savedReadTop, setSavedReadTop] = useState<number | null>(null);
   /** 全屏模式：阅读/编辑共用，文件页默认全屏（S4a2 修订：编辑不再退出全屏）。 */
   const [immersive, setImmersive] = useState(true);
-  const [menuVisible, setMenuVisible] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchOffset = useRef(0);
   /** 全屏编辑的「⋯」扩展行（＋草稿/重命名/删除/折行）。 */
   const [moreVisible, setMoreVisible] = useState(false);
   /** 底部抽屉（大纲/符号操作）；跳转请求与「返回原位置」。 */
@@ -147,6 +153,9 @@ export function FileScreen({
   const [returnScrollTop, setReturnScrollTop] = useState<number | null>(null);
   /** Python 诊断（S4d）：null=未检查；检查后波浪线 + 抽屉列表。 */
   const [diagnostics, setDiagnostics] = useState<Diagnostic[] | null>(null);
+  const visibleContentRef = useRef(initialData.content);
+  visibleContentRef.current = mode === 'edit' ? editText : data.content;
+  useEffect(() => { setDiagnostics(null); }, [mode, data.content]);
   const [checking, setChecking] = useState(false);
   /** 片段分享（S4f）：只读模式的非空选区。 */
   const [snippet, setSnippet] = useState<
@@ -184,7 +193,6 @@ export function FileScreen({
     void (async () => {
       const [saved] = await Promise.all([
         loadReadPosition(projectId, initialData.path),
-        loadWrapPref().then((value) => setWrap(value)),
       ]);
       setSavedReadTop(saved?.scrollTop ?? null);
     })();
@@ -612,6 +620,9 @@ export function FileScreen({
         setDrawer(null);
         return true;
       }
+      if (moreVisible) { setMoreVisible(false); return true; }
+      if (searchVisible) { setSearchVisible(false); return true; }
+      if (focusMode) { setFocusMode(false); return true; }
       if (mode === 'edit') {
         void exitEditToRead();
         return true;
@@ -619,7 +630,7 @@ export function FileScreen({
       return false;
     });
     return () => registerBackGuard(null);
-  }, [mode, exitEditToRead, registerBackGuard, contextQuery, drawer]);
+  }, [mode, exitEditToRead, registerBackGuard, contextQuery, drawer, moreVisible, searchVisible, focusMode]);
 
   const lineCount = (mode === 'edit' ? editText : data.content).split('\n').length;
   const readOnlyBlocked =
@@ -644,12 +655,12 @@ export function FileScreen({
       : savedReadTop;
 
   const contentLines = useMemo(
-    () => data.content.split('\n'),
-    [data.content],
+    () => (mode === 'edit' ? editText : data.content).split('\n'),
+    [data.content, editText, mode],
   );
   const outlineSymbols = useMemo(
-    () => extractOutline(data.content, data.path),
-    [data.content, data.path],
+    () => extractOutline(mode === 'edit' ? editText : data.content, data.path),
+    [data.content, data.path, editText, mode],
   );
 
   /** 跳到指定行（大纲/符号/诊断共用）：记录原位置以便返回。 */
@@ -738,10 +749,12 @@ export function FileScreen({
     setChecking(true);
     setMessage(null);
     try {
+      const checkedContent = mode === 'edit' ? editTextRef.current : data.content;
       const response = await client.diagnose(projectId, {
         path: initialData.path,
-        content: editTextRef.current,
+        content: checkedContent,
       });
+      if (visibleContentRef.current !== checkedContent) { setMessage('正文已变化，请重新检查。'); return; }
       setDiagnostics(response.diagnostics);
       if (response.diagnostics.length === 0) {
         setDrawer(null);
@@ -754,7 +767,7 @@ export function FileScreen({
     } finally {
       setChecking(false);
     }
-  }, [checking, client, initialData.path, online, projectId, revoked]);
+  }, [checking, client, data.content, initialData.path, mode, online, projectId, revoked]);
 
   const patchSymbolDrawer = useCallback(
     (patch: { results?: { kind: 'defs' | 'refs'; lines: number[] } | null; message?: string | null }) => {
@@ -866,10 +879,7 @@ export function FileScreen({
   /> : null;
 
   const drawerJsx = drawer ? (
-    <>
-      <div className="sheet-overlay" onClick={() => setDrawer(null)} />
-      <div className="sheet">
-        <div className="sheet__handle" />
+    <ActionSheet title="代码导航" onClose={() => setDrawer(null)}>
         {drawer.type === 'outline' ? (
           <>
             <p className="sheet__title">代码大纲（{outlineSymbols.length}）</p>
@@ -984,8 +994,7 @@ export function FileScreen({
             ) : null}
           </>
         )}
-      </div>
-    </>
+    </ActionSheet>
   ) : null;
 
   const returnPill =
@@ -1013,9 +1022,7 @@ export function FileScreen({
     ) : null;
 
   const toggleImmersiveWrap = () => {
-    const next = !wrap;
-    setWrap(next);
-    void saveWrapPref(next);
+    updateAppearance({ wrap: !wrap });
   };
 
   // 共享片段：草稿选择器与冲突处理块（普通布局与全屏编辑都用）
@@ -1059,453 +1066,67 @@ export function FileScreen({
       </div>
     ) : null;
 
-  // ---- 全屏模式（阅读/编辑共用，文件页默认全屏）----
-  if (immersive && mode === 'read') {
-    // 阅读：点代码区呼出/收起浮动菜单
-    return (
-      <section>
-        <div className="immersive-wrap" onClick={() => setMenuVisible((value) => !value)}>
-          <CodeEditor
-            className="cmhost--full"
-            doc={data.content}
-            readOnly
-            fileName={data.path}
-            wrap={wrap}
-            initialScrollTop={initialReadTop}
-            scrollRequest={scrollRequest}
-            onSymbolPress={openSymbolDrawer}
-            onSelection={setSnippet}
-            onScrollTop={onReadScroll}
-          />
-          {menuVisible ? (
-            <div
-              className="immersive-bar"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <button
-                type="button"
-                className="immersive-bar__btn"
-                onClick={() => {
-                  setImmersive(false);
-                  setMenuVisible(false);
-                }}
-              >
-                ⤡ 退出全屏
-              </button>
-              <span className="immersive-bar__title">
-                {data.path.split('/').pop()}
-                {hasUnsavedDraft ? ' · 有草稿' : ''}
-              </span>
-              <button
-                type="button"
-                className="immersive-bar__btn"
-                onClick={() => {
-                  setMenuVisible(false);
-                  setDrawer({ type: 'outline' });
-                }}
-              >
-                大纲
-              </button>
-              {isPythonFile ? <button type="button" className="immersive-bar__btn"
-                onClick={() => { setMenuVisible(false); openContext(); }} disabled={!online || revoked || saving}>关联</button> : null}
-              <button
-                type="button"
-                className="immersive-bar__btn"
-                onClick={() => {
-                  setMenuVisible(false);
-                  void shareWholeFile(data.content, currentSource);
-                }}
-                disabled={sharing}
-              >
-                分享
-              </button>
-              <button
-                type="button"
-                className="immersive-bar__btn"
-                onClick={() => {
-                  setMenuVisible(false);
-                  setMode('edit'); // 保持全屏：编辑同样占满屏幕
-                }}
-                disabled={readOnlyBlocked || revoked}
-              >
-                ✎ 编辑
-              </button>
-              <button
-                type="button"
-                className="immersive-bar__btn"
-                onClick={toggleImmersiveWrap}
-              >
-                {wrap ? '折行' : '横滚'}
-              </button>
-              <button
-                type="button"
-                className="immersive-bar__btn"
-                onClick={() => void reloadFromPc()}
-                disabled={!online || revoked || saving}
-              >
-                刷新
-              </button>
-            </div>
-          ) : null}
-        </div>
-        {returnPill}
-        {snippetPill}
-        {message ? (
-          <div className="result result--bad immersive-message">
-            <p className="result__title">{message}</p>
-          </div>
-        ) : null}
-        {drawerJsx}
-        {contextJsx}
-      </section>
-    );
-  }
-
-  if (immersive && mode === 'edit') {
-    // 编辑：编辑器占满全屏；顶部常驻一条操作栏（光标点击不能用来呼出菜单）。
-    // ＋草稿/重命名/删除/折行收进「⋯」扩展行，避免常驻挤占空间。
-    return (
-      <section className="immersive-edit">
-        <div className="immersive-bar immersive-bar--flow">
-          <button
-            type="button"
-            className="immersive-bar__btn"
-            onClick={exitEditToRead}
-            disabled={switchBusy || saving}
-          >
-            ✓ 完成
-          </button>
-          {draftsSelect}
-          <span
-            className={`immersive-bar__state ${editState === 'conflict' ? 'hint--error' : ''}`}
-          >
-            {localDraftState === 'error' ? '本地保存失败' : IMMERSIVE_STATE_TEXT[editState]}
-            {switchBusy ? '…' : ''}
-          </span>
-          <button
-            type="button"
-            className="immersive-bar__btn"
-            onClick={() => setMoreVisible((value) => !value)}
-          >
-            ⋯
-          </button>
-          <button
-            type="button"
-            className="immersive-bar__btn immersive-bar__btn--primary"
-            onClick={() => void saveToPc()}
-            disabled={
-              saving || revoked || switchBusy ||
-              (editState !== 'dirty' && editState !== 'conflict')
-            }
-          >
-            {saving ? '保存中' : '保存'}
-          </button>
-          <button
-            type="button"
-            className="immersive-bar__btn"
-            onClick={() => setImmersive(false)}
-          >
-            ⤡
-          </button>
-        </div>
-        {moreVisible ? (
-          <div className="immersive-bar immersive-bar--flow immersive-more">
-            <button
-              type="button"
-              className="immersive-bar__btn"
-              onClick={() => void createDraft()}
-              disabled={switchBusy || saving}
-            >
-              ＋草稿
-            </button>
-            <button
-              type="button"
-              className="immersive-bar__btn"
-              onClick={() => void renameActiveDraft()}
-              disabled={!activeDraftId || switchBusy || saving}
-            >
-              重命名
-            </button>
-            <button
-              type="button"
-              className="immersive-bar__btn"
-              onClick={() => void deleteActiveDraft()}
-              disabled={drafts.length === 0 || switchBusy || saving}
-            >
-              删除草稿
-            </button>
-            <button type="button" className="immersive-bar__btn" onClick={toggleImmersiveWrap}>
-              {wrap ? '折行：开' : '折行：关'}
-            </button>
-            {isPythonFile ? (
-              <button
-                type="button"
-                className="immersive-bar__btn"
-                onClick={() => {
-                  setMoreVisible(false);
-                  void runDiagnostics();
-                }}
-                disabled={!online || revoked || checking}
-              >
-                {checking ? '检查中…' : '检查语法'}
-              </button>
-            ) : null}
-            {isPythonFile ? <>
-              <button type="button" className="immersive-bar__btn" disabled={!online || revoked || saving}
-                onClick={() => openContext()}>关联草稿</button>
-              <button type="button" className="immersive-bar__btn" disabled={!online || revoked || saving}
-                onClick={() => {
-                  const cursor = cursorSymbolRef.current;
-                  if (cursor) openContext('definitions', cursor.symbol, cursor.line);
-                  else setMessage('请先将光标放在符号旁，再打开代码操作。');
-                }}>代码操作</button>
-            </> : null}
-            <button
-              type="button"
-              className="immersive-bar__btn"
-              onClick={() => {
-                setMoreVisible(false);
-                void shareWholeFile(editTextRef.current, 'draft');
-              }}
-              disabled={sharing}
-            >
-              分享草稿
-            </button>
-          </div>
-        ) : null}
-        {conflictPanel}
-        <CodeEditor
-          className="cmhost--editfull"
-          doc={editText}
-          readOnly={false}
-          fileName={data.path}
-          wrap={wrap}
-          scrollRequest={scrollRequest}
-          diagnostics={diagnostics ?? undefined}
-          onDocChange={onEditChange}
-          onCursorSymbol={(value) => { cursorSymbolRef.current = value; }}
-          onBlur={() => {
-            cancelPendingAutosave();
-            if (editStateRef.current === 'dirty' || editStateRef.current === 'conflict') {
-              void flushActiveDraft();
-            }
-          }}
-        />
-        {message ? (
-          <div className="result result--bad immersive-message">
-            <p className="result__title">{message}</p>
-          </div>
-        ) : null}
-        {!online ? (
-          <p className="hint immersive-hint">离线：可继续编辑，草稿保留，联网后保存。</p>
-        ) : null}
-        {contextJsx}
-      </section>
-    );
-  }
-
+  const findNext = () => {
+    const content = mode === 'edit' ? editTextRef.current : data.content;
+    if (!searchQuery) return;
+    const lower = content.toLowerCase();
+    let index = lower.indexOf(searchQuery.toLowerCase(), searchOffset.current);
+    if (index < 0) index = lower.indexOf(searchQuery.toLowerCase());
+    if (index < 0) { setMessage('没有找到匹配内容'); return; }
+    searchOffset.current = index + Math.max(1, searchQuery.length);
+    jumpToLine(content.slice(0, index).split('\n').length);
+  };
+  const withMenuClosed = (action: () => void) => () => { setMoreVisible(false); action(); };
   return (
-    <section>
-      <div className="navrow">
-        <button
-          type="button"
-          className="navrow__back"
-          onClick={() => {
-            if (mode === 'edit') {
-              exitEditToRead();
-            } else {
-              onBack();
-            }
-          }}
-        >
-          ‹ {mode === 'edit' ? '退出编辑' : '返回'}
-        </button>
-        <div className="navrow__stack">
-          <span className="navrow__title">{data.path.split('/').pop()}</span>
-          <span className="navrow__meta">
-            {lineCount} 行 · {data.encoding} · {data.newline}
-          </span>
-        </div>
-        {mode === 'read' ? (
-          <button
-            type="button"
-            className="navrow__action"
-            onClick={() => {
-              setMenuVisible(false);
-              setImmersive(true);
-            }}
-          >
-            ⤢ 全屏
-          </button>
-        ) : null}
-      </div>
-      {fromCache ? (
-        <p className="hint">
-          ⚠ 内容来自本地缓存（{cachedAt?.slice(0, 19).replace('T', ' ')}），
-          电脑最新内容以联网刷新为准。
-        </p>
-      ) : null}
-      {mode === 'read' && hasUnsavedDraft ? (
-        <p className="hint">
-          有未同步的本地草稿（{drafts[0].name}），点「编辑」继续；草稿箱可统一管理。
-        </p>
-      ) : null}
-      {message ? (
-        <div className="result result--bad">
-          <p className="result__title">{message}</p>
-        </div>
-      ) : null}
-
-      {mode === 'read' ? (
-        <>
-          <div className="btnrow">
-            <button
-              type="button"
-              className="btn btn--primary"
-              onClick={() => setMode('edit')}
-              disabled={readOnlyBlocked || revoked}
-            >
-              {readOnlyBlocked ? '只读文件' : '✎ 编辑'}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => void reloadFromPc()}
-              disabled={!online || revoked || saving}
-            >
-              刷新
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setDrawer({ type: 'outline' })}
-            >
-              大纲
-            </button>
-            {isPythonFile ? <button type="button" className="btn" disabled={!online || revoked || saving}
-              onClick={() => openContext()}>智能关联</button> : null}
-            <button
-              type="button"
-              className="btn"
-              onClick={() => void shareWholeFile(data.content, currentSource)}
-              disabled={sharing}
-            >
-              分享
-            </button>
-            <button type="button" className="btn" onClick={toggleImmersiveWrap}>
-              {wrap ? '折行：开' : '折行：关'}
-            </button>
-          </div>
-          {revoked ? <p className="hint hint--error">授权已撤销，编辑与刷新不可用。</p> : null}
-          <CodeEditor
-            className="cmhost--read"
-            doc={data.content}
-            readOnly
-            fileName={data.path}
-            wrap={wrap}
-            initialScrollTop={initialReadTop}
-            scrollRequest={scrollRequest}
-            onSymbolPress={openSymbolDrawer}
-            onSelection={setSnippet}
-            onScrollTop={onReadScroll}
-          />
-          {returnPill}
-          {snippetPill}
-          {drawerJsx}
-        </>
-      ) : (
-        <>
-          <div className="editbar">
-            {draftsSelect}
-            <button
-              type="button"
-              className="editbar__btn"
-              onClick={() => void createDraft()}
-              disabled={switchBusy || saving}
-            >
-              ＋草稿
-            </button>
-            <button
-              type="button"
-              className="editbar__btn"
-              onClick={() => void renameActiveDraft()}
-              disabled={!activeDraftId || switchBusy || saving}
-            >
-              重命名
-            </button>
-            <button
-              type="button"
-              className="editbar__btn"
-              onClick={() => void deleteActiveDraft()}
-              disabled={drafts.length === 0 || switchBusy || saving}
-            >
-              删除
-            </button>
-          </div>
-          <p className={`hint ${editState === 'conflict' ? 'hint--error' : ''}`}>
-            {EDIT_STATE_TEXT[editState]} · {localDraftState === 'saved' ? '草稿已存本机' : localDraftState === 'pending' ? '草稿待保存' : '本地草稿保存失败'}
-            {switchBusy ? ' · 正在切换…' : ''}
-          </p>
-          {conflictPanel}
-          <CodeEditor
-            className="cmhost--edit"
-            doc={editText}
-            readOnly={false}
-            fileName={data.path}
-            wrap={wrap}
-            scrollRequest={scrollRequest}
-            diagnostics={diagnostics ?? undefined}
-            onDocChange={onEditChange}
-            onCursorSymbol={(value) => { cursorSymbolRef.current = value; }}
-            onBlur={() => {
-              cancelPendingAutosave();
-              if (editStateRef.current === 'dirty' || editStateRef.current === 'conflict') {
-                void flushActiveDraft();
-              }
-            }}
-          />
-          <div className="btnrow">
-            {isPythonFile ? <>
-              <button type="button" className="btn" disabled={!online || revoked || saving}
-                onClick={() => openContext()}>关联草稿</button>
-              <button type="button" className="btn" disabled={!online || revoked || saving}
-                onClick={() => {
-                  const cursor = cursorSymbolRef.current;
-                  if (cursor) openContext('definitions', cursor.symbol, cursor.line);
-                  else setMessage('请先将光标放在符号旁，再打开代码操作。');
-                }}>代码操作</button>
-            </> : null}
-            {isPythonFile ? (
-              <button
-                type="button"
-                className="btn"
-                onClick={() => void runDiagnostics()}
-                disabled={!online || revoked || checking || saving}
-              >
-                {checking ? '检查中…' : '检查'}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn"
-              onClick={() => void shareWholeFile(editTextRef.current, 'draft')}
-              disabled={sharing}
-            >
-              分享草稿
-            </button>
-            <button
-              type="button"
-              className="btn btn--primary"
-              onClick={() => void saveToPc()}
-              disabled={saving || revoked || switchBusy || (editState !== 'dirty' && editState !== 'conflict')}
-            >
-              {saving ? '保存中…' : '保存到电脑'}
-            </button>
-          </div>
-          {!online ? <p className="hint">当前离线：可以继续编辑，草稿会保留，联网后再保存。</p> : null}
-        </>
-      )}
-      {contextJsx}
+    <section className={`file-workspace ${immersive ? 'file-workspace--full' : ''}`}>
+      {!focusMode && <>
+        <header className="code-toolbar">
+          <button type="button" className="icon-button" aria-label={mode === 'edit' ? '完成编辑' : '返回文件浏览'} title={mode === 'edit' ? '完成编辑' : '返回文件浏览'} disabled={mode === 'edit' && (saving || switchBusy)} onClick={mode === 'edit' ? exitEditToRead : onBack}><Icon name={mode === 'edit' ? 'check' : 'back'} /></button>
+          <div className="code-title"><strong>{data.path.split('/').pop()}</strong><small>{projectName} · {mode === 'edit' ? '编辑草稿' : '只读'}{hasUnsavedDraft && mode === 'read' ? ' · 有草稿' : ''}</small></div>
+          <button type="button" className="icon-button" aria-label="搜索代码" title="搜索代码" aria-pressed={searchVisible} onClick={() => setSearchVisible(!searchVisible)}><Icon name="search" /></button>
+          {mode === 'read' ? <button type="button" className="icon-button" aria-label="编辑" title={readOnlyBlocked ? '只读文件' : '编辑'} disabled={readOnlyBlocked || revoked} onClick={() => setMode('edit')}><Icon name="edit" /></button>
+            : <button type="button" className="icon-button" aria-label="保存" title="保存到电脑" onClick={() => void saveToPc()} disabled={saving || revoked || switchBusy || (editState !== 'dirty' && editState !== 'conflict')}><Icon name="save" /></button>}
+          <button type="button" className="icon-button" aria-label="更多操作" title="更多操作" onClick={() => setMoreVisible(true)}><Icon name="more" /></button>
+        </header>
+        {searchVisible && <form className="code-search" onSubmit={(event) => { event.preventDefault(); findNext(); }}><input aria-label="搜索代码内容" placeholder="在文件中查找…" value={searchQuery} onChange={(event) => { searchOffset.current = 0; setSearchQuery(event.target.value); }} /><button type="submit">下一处</button><button type="button" aria-label="关闭搜索" onClick={() => setSearchVisible(false)}><Icon name="close" size={17} /></button></form>}
+        {mode === 'edit' && <div className="draft-bar">{draftsSelect}<span title={EDIT_STATE_TEXT[editState]}>{localDraftState === 'error' ? '本地草稿保存失败' : localDraftState === 'pending' ? '草稿待保存' : editState === 'dirty' ? '本机已存 · 待同步' : IMMERSIVE_STATE_TEXT[editState]}{switchBusy ? '…' : ''}</span></div>}
+      </>}
+      {fromCache && <p className="file-notice">本地缓存 · {cachedAt?.slice(0, 19).replace('T', ' ')} · 联网刷新可获取电脑最新内容</p>}
+      {revoked && <p className="file-notice file-notice--error">授权已撤销，无法刷新和保存到电脑。</p>}
+      {mode === 'edit' && conflictPanel}
+      <div className="code-document"><CodeEditor
+        className="cmhost--workspace"
+        doc={mode === 'edit' ? editText : data.content}
+        readOnly={mode === 'read'} fileName={data.path} wrap={wrap}
+        initialScrollTop={mode === 'read' ? initialReadTop : undefined}
+        scrollRequest={scrollRequest} diagnostics={diagnostics ?? undefined}
+        onDocChange={onEditChange} onSymbolPress={mode === 'read' ? openSymbolDrawer : undefined}
+        onSelection={mode === 'read' ? setSnippet : undefined}
+        onScrollTop={mode === 'read' ? onReadScroll : undefined}
+        onCursorSymbol={(value) => { cursorSymbolRef.current = value; }}
+        onBlur={() => { if (mode !== 'edit') return; cancelPendingAutosave(); if (editStateRef.current === 'dirty' || editStateRef.current === 'conflict') void flushActiveDraft(); }}
+      /></div>
+      {!focusMode && <footer className="code-footer"><button type="button" onClick={() => setDrawer({ type: 'outline' })}><Icon name="outline" size={16} />大纲</button>{isPythonFile && <button type="button" disabled={!online || revoked || saving} onClick={() => openContext()}><Icon name="link" size={16} />关联</button>}<span>{data.encoding.toUpperCase()} · {lineCount} 行</span></footer>}
+      {focusMode && <button type="button" className="focus-exit" aria-label="退出专注阅读" title="退出专注阅读" onClick={() => setFocusMode(false)}><Icon name="expand" /></button>}
+      {message && <p className="file-notice file-notice--error" role="status">{message}</p>}
+      {!online && mode === 'edit' && <p className="file-notice">离线：可以继续编辑，草稿保留在本机。</p>}
+      {returnPill}{snippetPill}{drawerJsx}{contextJsx}
+      {moreVisible && <ActionSheet title={mode === 'read' ? '代码工具' : '草稿工具'} onClose={() => setMoreVisible(false)}>
+        <MenuItem icon="outline" onClick={withMenuClosed(() => setDrawer({ type: 'outline' }))}>代码大纲</MenuItem>
+        {isPythonFile && <MenuItem icon="link" disabled={!online || revoked || saving} onClick={withMenuClosed(() => openContext())}>{mode === 'edit' ? '关联草稿' : '智能关联'}</MenuItem>}
+        {isPythonFile && mode === 'edit' && <MenuItem icon="code" disabled={!online || revoked || saving} onClick={withMenuClosed(() => { const cursor = cursorSymbolRef.current; if (cursor) openContext('definitions', cursor.symbol, cursor.line); else setMessage('请先将光标放在符号旁，再打开代码操作。'); })}>光标处定义与引用</MenuItem>}
+        {isPythonFile && <MenuItem icon="shield" disabled={!online || revoked || checking || saving} onClick={withMenuClosed(() => { void runDiagnostics(); })}>{checking ? '检查中…' : '检查语法与诊断'}</MenuItem>}
+        <MenuItem icon="share" disabled={sharing} onClick={withMenuClosed(() => { void shareWholeFile(mode === 'edit' ? editTextRef.current : data.content, mode === 'edit' ? 'draft' : currentSource); })}>{mode === 'edit' ? '分享草稿' : '分享文件'}</MenuItem>
+        {mode === 'read' && <MenuItem icon="refresh" aria-label="刷新" disabled={!online || revoked || saving} onClick={withMenuClosed(() => { void reloadFromPc(); })}>刷新电脑版本</MenuItem>}
+        <MenuItem icon="outline" onClick={toggleImmersiveWrap}>{wrap ? '自动折行：开' : '自动折行：关'}</MenuItem>
+        <MenuItem icon="expand" onClick={withMenuClosed(() => { setImmersive(true); setFocusMode(true); })}>专注阅读</MenuItem>
+        <MenuItem icon="system" onClick={withMenuClosed(() => setImmersive(!immersive))}>{immersive ? '显示连接状态栏' : '隐藏连接状态栏'}</MenuItem>
+        {mode === 'edit' && <>
+          <MenuItem icon="plus" disabled={switchBusy || saving} onClick={withMenuClosed(() => { void createDraft(); })}>新建命名草稿</MenuItem>
+          <MenuItem icon="edit" disabled={!activeDraftId || switchBusy || saving} onClick={withMenuClosed(() => { void renameActiveDraft(); })}>重命名草稿</MenuItem>
+          <MenuItem icon="trash" danger disabled={!drafts.length || switchBusy || saving} onClick={withMenuClosed(() => { void deleteActiveDraft(); })}>删除当前草稿</MenuItem>
+        </>}
+      </ActionSheet>}
     </section>
   );
 }

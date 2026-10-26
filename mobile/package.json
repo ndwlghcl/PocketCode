@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "design:dev": "vite --config vite.preview.config.ts --open /design-preview.html",
+    "design:build": "tsc --noEmit && vite build --config vite.preview.config.ts",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

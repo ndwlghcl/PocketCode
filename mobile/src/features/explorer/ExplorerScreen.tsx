@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { FileContentResponse, ManifestNode, ProjectSummary } from '../../api/types';
 import { PocketCodeClient, PocketCodeError } from '../../api/client';
+import type { ProbeResult } from '../../api/probe';
 import {
   loadCachedFile,
   loadCachedManifest,
@@ -10,6 +11,9 @@ import {
 } from '../../storage/cacheStore';
 import { restoreWindowScroll, saveWindowScroll } from '../../app/scrollMemory';
 import { sortEntries } from './sortEntries';
+import { Icon } from '../../ui/Icon';
+import { ActionSheet, IconButton, MenuItem } from '../../ui/Controls';
+import { ProjectCacheButton } from './ProjectCacheButton';
 
 /** 文件夹展开状态按项目记忆：从文件返回目录时保持上次展开的样子。
  *  语义：记录“已展开”的目录；不在集合中 = 收起（默认全部收起，用户要求）。 */
@@ -19,6 +23,8 @@ interface Props {
   client: PocketCodeClient | null;
   project: ProjectSummary;
   online: boolean;
+  /** 定时连接检查完成后后台更新目录。 */
+  lastProbe?: ProbeResult | null;
   /** 授权被撤销：本地缓存内容也不得再展示。 */
   revoked: boolean;
   onBack: () => void;
@@ -61,6 +67,7 @@ export function ExplorerScreen({
   client,
   project,
   online,
+  lastProbe,
   revoked,
   onBack,
   onOpenFile,
@@ -80,6 +87,8 @@ export function ExplorerScreen({
   const [mutationBusy, setMutationBusy] = useState(false);
   /** 文件名过滤（本地即时，PRD §4.1 文件名搜索）。 */
   const [nameFilter, setNameFilter] = useState('');
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
   const scrollRestored = useRef(false);
   const scrollKey = `explorer:${project.id}`;
 
@@ -135,7 +144,7 @@ export function ExplorerScreen({
     return () => {
       cancelled = true;
     };
-  }, [client, project.id, online]);
+  }, [client, project.id, online, lastProbe]);
 
   const refreshManifest = async (): Promise<boolean> => {
     if (!client) return false;
@@ -282,22 +291,22 @@ export function ExplorerScreen({
             <button
               type="button"
               className="filelist__item"
-              style={{ paddingLeft: `${12 + depth * 18}px` }}
+              style={{ paddingLeft: `${8 + Math.min(depth, 5) * 14}px` }}
+              title={node.path}
               onClick={() => (needle ? null : toggle(node.path))}
             >
-              <span className="filelist__icon">
-                {needle ? '🔎' : expanded.has(node.path) ? '▾' : '▸'}
-              </span>
+              <span className="filelist__icon filelist__icon--folder"><Icon name={needle || expanded.has(node.path) ? 'down' : 'chevron'} size={12} /><Icon name="folder" size={20} /></span>
               <span>{node.name}</span>
             </button>
           ) : (
             <button
               type="button"
               className="filelist__item"
-              style={{ paddingLeft: `${12 + depth * 18}px` }}
+              style={{ paddingLeft: `${8 + Math.min(depth, 5) * 14}px` }}
+              title={node.path}
               onClick={() => void openFile(node)}
             >
-              <span className="filelist__icon">{fileLoading === node.path ? '⏳' : '📄'}</span>
+              <span className="filelist__icon"><Icon name={fileLoading === node.path ? 'refresh' : /\.(py|tsx?|jsx?|java|css)$/.test(node.name) ? 'code' : 'file'} size={20} /></span>
               <span>{node.name}</span>
             </button>
           )}
@@ -308,7 +317,7 @@ export function ExplorerScreen({
             onClick={() => void trashEntry(node)}
             disabled={!mutationsEnabled}
           >
-            🗑
+            <Icon name="trash" size={16} />
           </button>
         </div>
       );
@@ -328,50 +337,27 @@ export function ExplorerScreen({
     <section>
       <div className="navrow">
         <button type="button" className="navrow__back" onClick={onBack}>
-          ‹ 返回
+          <Icon name="back" size={20} /><span className="visually-hidden">返回项目</span>
         </button>
         <span className="navrow__title">{project.name}</span>
+        <IconButton icon="more" label="文件操作" onClick={() => setToolsOpen(true)} />
       </div>
-      <div className="btnrow">
-        <button
-          type="button"
-          className="btn"
-          onClick={onOpenSearch}
-        >
-          🔍 搜索
-        </button>
-        <button type="button" className="btn" onClick={onOpenGit}>
-          Git
-        </button>
-        <button type="button" className="btn" onClick={onOpenShare}>
-          分享
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => void createEntry('file')}
-          disabled={!mutationsEnabled}
-        >
-          ＋文件
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => void createEntry('dir')}
-          disabled={!mutationsEnabled}
-        >
-          ＋夹
-        </button>
-      </div>
+      <div className="toolbar">
       <input
         className="field__input"
         value={nameFilter}
         onChange={(event) => setNameFilter(event.target.value)}
-        placeholder="按文件名过滤（本地即时）"
+        placeholder="查找文件…"
+        aria-label="按文件名过滤"
         autoCapitalize="off"
         autoCorrect="off"
         spellCheck={false}
       />
+      <IconButton icon="git" label="Git 变更" onClick={onOpenGit} />
+      <IconButton icon="plus" label="新建" onClick={() => setNewOpen(true)} disabled={!mutationsEnabled} />
+      </div>
+      <div className="breadcrumb"><Icon name="folder" size={14} /><span>{project.name} / 根目录</span></div>
+      <ProjectCacheButton key={project.id} client={client} projectId={project.id} online={online} revoked={revoked} />
       {notice ? (
         <div className={`result ${notice.kind === 'ok' ? 'result--ok' : 'result--bad'}`}>
           <p className="result__title">
@@ -385,8 +371,8 @@ export function ExplorerScreen({
           <p className="result__title">✘ {fileError}</p>
         </div>
       ) : null}
-      {fromCache ? <p className="hint">目录来自本地缓存，联网后自动更新</p> : null}
-      {error ? (
+      {fromCache && (!online || error) ? <p className="hint">目录来自本地缓存，联网后自动更新</p> : null}
+      {error && (!fromCache || online) ? (
         <div className="result result--bad">
           <p className="result__title">✘ {error}</p>
         </div>
@@ -401,6 +387,8 @@ export function ExplorerScreen({
       <ul className="filelist">
         {displayChildren ? renderNodes(displayChildren, 0) : null}
       </ul>
+      {toolsOpen && <ActionSheet title="文件操作" onClose={() => setToolsOpen(false)}><MenuItem icon="search" onClick={() => { setToolsOpen(false); onOpenSearch(); }}>项目全文搜索</MenuItem><MenuItem icon="share" onClick={() => { setToolsOpen(false); onOpenShare(); }}>多文件分享</MenuItem><MenuItem icon="refresh" onClick={() => { setToolsOpen(false); void refreshManifest(); }} disabled={!online || revoked}>刷新目录</MenuItem></ActionSheet>}
+      {newOpen && <ActionSheet title="新建" onClose={() => setNewOpen(false)}><MenuItem icon="file" onClick={() => { setNewOpen(false); void createEntry('file'); }}>新建文件</MenuItem><MenuItem icon="folder" onClick={() => { setNewOpen(false); void createEntry('dir'); }}>新建文件夹</MenuItem></ActionSheet>}
     </section>
   );
 }

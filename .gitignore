@@ -10,6 +10,7 @@ dist/
 # Node / mobile
 node_modules/
 mobile/dist/
+mobile/design-preview-dist/
 mobile/android/.gradle/
 mobile/android/app/build/
 mobile/android/build/

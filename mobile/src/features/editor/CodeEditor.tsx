@@ -26,6 +26,7 @@ import {
 import { languages } from '@codemirror/language-data';
 import { tags as t } from '@lezer/highlight';
 import { identifierAt } from './outline';
+import { useAppearance } from '../../app/Appearance';
 
 /** 诊断（S4d）：与合同 Diagnostic 对齐的子集。 */
 export interface Diagnostic {
@@ -119,11 +120,13 @@ export function CodeEditor({
   onBlur,
   className,
 }: Props) {
+  const { prefs } = useAppearance();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const languageCompartment = useRef(new Compartment());
   const wrapCompartment = useRef(new Compartment());
   const readOnlyCompartment = useRef(new Compartment());
+  const numbersCompartment = useRef(new Compartment());
   // 回调走 ref：视图闭包始终读最新函数，不因回调身份重建扩展
   const changeRef = useRef(onDocChange);
   changeRef.current = onDocChange;
@@ -150,7 +153,7 @@ export function CodeEditor({
       state: EditorState.create({
         doc,
         extensions: [
-          lineNumbers(),
+          numbersCompartment.current.of(prefs.lineNumbers ? lineNumbers() : []),
           highlightSpecialChars(),
           drawSelection(),
           history(),
@@ -243,6 +246,13 @@ export function CodeEditor({
       ),
     });
   }, [wrap]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({ effects: numbersCompartment.current.reconfigure(prefs.lineNumbers ? lineNumbers() : []) });
+    view.requestMeasure();
+  }, [prefs.lineNumbers, prefs.fontSize]);
 
   // ---- 语言：按文件名异步加载语法包 ----
   useEffect(() => {

@@ -16,6 +16,8 @@ import {
   saveCachedProjects,
 } from '../../storage/cacheStore';
 import { CodeEditor } from '../editor/CodeEditor';
+import { Icon } from '../../ui/Icon';
+import { ActionSheet, IconButton, MenuItem } from '../../ui/Controls';
 
 interface Props {
   client: PocketCodeClient | null;
@@ -41,6 +43,7 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [toolsOpen, setToolsOpen] = useState(false);
 
   const loadProjects = useCallback(async (): Promise<ProjectSummary[]> => {
     try {
@@ -157,10 +160,8 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
 
   return (
     <section>
-      <h1 className="screen__title">草稿箱</h1>
-      <p className="hint">
-        保存到电脑后草稿仍保留在这里——它们是修改版本和灵感的记录，由你手动管理。
-      </p>
+      <header className="page-intro page-heading-row"><div><p className="eyebrow">想法，先留在这里</p><h1>草稿箱<span>.</span></h1></div><IconButton icon="more" label="草稿箱操作" onClick={() => setToolsOpen(true)} /></header>
+      <p className="project-assurance"><Icon name="shield" size={16} />保存在这台设备，离线也能翻阅。</p>
       {notice ? (
         <div className="result result--ok">
           <p className="result__title">✔ {notice}</p>
@@ -171,23 +172,10 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
           <p className="result__title">✘ {error}</p>
         </div>
       ) : null}
-      <div className="btnrow">
-        <button type="button" className="btn" onClick={() => void reload()} disabled={busy}>
-          {busy ? '正在刷新…' : '刷新'}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => void clearEverything()}
-          disabled={busy || !items || items.length === 0}
-        >
-          清空全部
-        </button>
-      </div>
       {items === null ? (
         <p className="hint">正在读取草稿…</p>
       ) : items.length === 0 ? (
-        <p className="empty">草稿箱是空的。打开文件进入编辑后会自动生成草稿。</p>
+        <div className="empty"><Icon name="drafts" size={30} /><p>留一点空间给新想法。</p><span>编辑文件时，草稿会在这里等你。</span></div>
       ) : (
         <p className="hint">共 {items.length} 份草稿</p>
       )}
@@ -198,7 +186,7 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
             <li key={item.draft.id}>
               <div className="draftcard">
                 <div className="draftcard__head">
-                  <span className="draftcard__name">{item.draft.name}</span>
+                  <span className="draftcard__name"><Icon name="drafts" size={18} /> {item.draft.name}</span>
                   <button
                     type="button"
                     className="draftcard__action"
@@ -213,6 +201,7 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
                   {item.draft.savedAt.slice(0, 19).replace('T', ' ')}
                 </p>
                 <p className="cardlist__meta draftcard__path">{item.path}</p>
+                <p className="draft-save-state"><Icon name="check" size={13} />已保存在本机</p>
                 {expanded ? (
                   <>
                     <CodeEditor
@@ -248,7 +237,7 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
                     onClick={() => void deleteItem(item)}
                     disabled={busy}
                   >
-                    删除
+                    <Icon name="trash" size={16} /><span>删除</span>
                   </button>
                 </div>
               </div>
@@ -256,6 +245,7 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
           );
         })}
       </ul>
+      {toolsOpen && <ActionSheet title="草稿箱操作" onClose={() => setToolsOpen(false)}><MenuItem icon="refresh" disabled={busy} onClick={() => { setToolsOpen(false); void reload(); }}>刷新草稿</MenuItem><MenuItem icon="trash" danger disabled={busy || !items?.length} onClick={() => { setToolsOpen(false); void clearEverything(); }}>清空全部草稿</MenuItem></ActionSheet>}
     </section>
   );
 }

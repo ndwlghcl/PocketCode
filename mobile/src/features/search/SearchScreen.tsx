@@ -1,3 +1,4 @@
+import { Icon } from '../../ui/Icon';
 import { useCallback, useRef, useState } from 'react';
 
 import type { FileContentResponse, ProjectSummary, SearchFileMatches } from '../../api/types';
@@ -128,7 +129,7 @@ export function SearchScreen({ client, project, online, revoked, onBack, onOpenF
     <section>
       <div className="navrow">
         <button type="button" className="navrow__back" onClick={onBack}>
-          ‹ 返回
+          <Icon name="back" size={20} /><span className="visually-hidden">返回目录</span>
         </button>
         <div className="navrow__stack">
           <span className="navrow__title">搜索 · {project.name}</span>

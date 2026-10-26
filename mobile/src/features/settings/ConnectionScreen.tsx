@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import type { TrashEntry } from '../../api/types';
 import { PocketCodeClient, PocketCodeError } from '../../api/client';
@@ -48,7 +48,7 @@ function describePairAttempt(attempt: PairAttempt): { ok: boolean; text: string 
 }
 
 /** S2 连接页：扫码配对 + 手动地址诊断（health，不带凭据）。
- *  S3c 增补：回收区列表与恢复（跨项目的电脑端回收区放在全局连接页）。 */
+ *  回收区支持恢复、永久删除和清空，跨项目的电脑端回收区放在全局连接页。 */
 export function ConnectionScreen({ connection, client }: Props) {
   const { pairing, lastProbe, busy, scanning, status, refresh, pairFromQr, unpair } =
     connection;
@@ -65,7 +65,7 @@ export function ConnectionScreen({ connection, client }: Props) {
   const online = status.state === 'online';
 
   const loadTrash = useCallback(async () => {
-    if (!client) return;
+    if (!client || !online) return;
     setTrashBusy(true);
     try {
       const response = await client.listTrash();
@@ -81,23 +81,15 @@ export function ConnectionScreen({ connection, client }: Props) {
     } finally {
       setTrashBusy(false);
     }
-  }, [client]);
+  }, [client, online]);
 
-  // 进入连接页且已配对时加载一次回收区。
-  // 注意：useConnection 每 15 秒 refresh 都会换新的 pairing/client 对象，
-  // 不能直接依赖它们，否则回收区每 15 秒重拉并冲掉操作提示——这里按
-  // 「服务器地址」节流，更新靠手动「刷新回收区」按钮。
-  const trashLoadedFor = useRef<string | null>(null);
+  // client 按凭据保持稳定；进入页面或恢复连接时加载，定时探测不重拉列表。
   useEffect(() => {
-    const baseUrl = pairing?.baseUrl ?? null;
-    if (baseUrl && trashLoadedFor.current !== baseUrl) {
-      trashLoadedFor.current = baseUrl;
-      void loadTrash();
-    }
-  }, [pairing, loadTrash]);
+    void loadTrash();
+  }, [loadTrash]);
 
   const restoreTrashEntry = async (entry: TrashEntry) => {
-    if (!client || trashBusy) return;
+    if (!client || !online || trashBusy) return;
     if (
       !window.confirm(
         `把「${entry.original_path}」恢复到电脑上的原位置？\n若原位置已被占用，将不会覆盖。`,
@@ -109,7 +101,7 @@ export function ConnectionScreen({ connection, client }: Props) {
     setTrashMessage(null);
     try {
       const result = await client.restoreTrash(entry.trash_id);
-      await loadTrash(); // 先刷新列表（内部会清消息），再写成功提示
+      setTrashItems((items) => items?.filter((item) => item.trash_id !== entry.trash_id) ?? null);
       setTrashMessage(`已恢复到 ${result.restored_path}`);
       setTrashError(false);
     } catch (cause) {
@@ -125,6 +117,42 @@ export function ConnectionScreen({ connection, client }: Props) {
         );
         setTrashError(true);
       }
+    } finally {
+      setTrashBusy(false);
+    }
+  };
+
+  const deleteTrashEntry = async (entry: TrashEntry) => {
+    if (!client || !online || trashBusy) return;
+    if (!window.confirm(`永久删除「${entry.original_path}」？\n${entry.kind === 'dir' ? '文件夹及其全部内容' : '文件'}将从电脑回收区彻底移除，无法恢复。`)) return;
+    setTrashBusy(true);
+    setTrashMessage(null);
+    try {
+      await client.deleteTrashEntry(entry.trash_id);
+      setTrashItems((items) => items?.filter((item) => item.trash_id !== entry.trash_id) ?? null);
+      setTrashMessage(`已永久删除 ${entry.original_path}`);
+      setTrashError(false);
+    } catch (cause) {
+      setTrashMessage(cause instanceof PocketCodeError ? cause.message : '永久删除失败，请刷新回收区后重试');
+      setTrashError(true);
+    } finally {
+      setTrashBusy(false);
+    }
+  };
+
+  const clearTrash = async () => {
+    if (!client || !online || trashBusy || !trashItems?.length) return;
+    if (!window.confirm('清空电脑回收区？\n所有项目的回收区文件和文件夹都会被永久删除，无法恢复。')) return;
+    setTrashBusy(true);
+    setTrashMessage(null);
+    try {
+      await client.clearTrash();
+      setTrashItems([]);
+      setTrashMessage('已清空电脑回收区');
+      setTrashError(false);
+    } catch (cause) {
+      setTrashMessage(cause instanceof PocketCodeError ? cause.message : '清空失败，请刷新回收区后重试');
+      setTrashError(true);
     } finally {
       setTrashBusy(false);
     }
@@ -223,7 +251,7 @@ export function ConnectionScreen({ connection, client }: Props) {
 
           <h2 className="screen__subtitle">电脑回收区</h2>
           <p className="hint">
-            目录页删除的文件/文件夹会进入电脑的回收区，可在这里跨会话恢复。
+            目录页删除的文件/文件夹会进入电脑的回收区，可在这里恢复或永久删除。永久删除后无法恢复。
           </p>
           {trashMessage ? (
             <div className={`result ${trashError ? 'result--bad' : 'result--ok'}`}>
@@ -247,14 +275,25 @@ export function ConnectionScreen({ connection, client }: Props) {
                         {` · ${entry.deleted_at.slice(0, 19).replace('T', ' ')}`}
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      className="trashitem__restore"
-                      onClick={() => void restoreTrashEntry(entry)}
-                      disabled={!online || trashBusy}
-                    >
-                      恢复
-                    </button>
+                    <div className="trashitem__actions">
+                      <button
+                        type="button"
+                        className="trashitem__restore"
+                        onClick={() => void restoreTrashEntry(entry)}
+                        disabled={!online || trashBusy}
+                      >
+                        恢复
+                      </button>
+                      <button
+                        type="button"
+                        className="trashitem__restore trashitem__delete"
+                        aria-label={`永久删除 ${entry.original_path}`}
+                        onClick={() => void deleteTrashEntry(entry)}
+                        disabled={!online || trashBusy}
+                      >
+                        永久删除
+                      </button>
+                    </div>
                   </div>
                 </li>
               ))}
@@ -269,8 +308,16 @@ export function ConnectionScreen({ connection, client }: Props) {
             >
               {trashBusy ? '正在刷新…' : '刷新回收区'}
             </button>
+            <button
+              type="button"
+              className="btn btn--danger"
+              onClick={() => void clearTrash()}
+              disabled={!online || trashBusy || !trashItems?.length}
+            >
+              清空回收区
+            </button>
           </div>
-          {!online ? <p className="hint">离线时无法读取/恢复回收区，联网后再试。</p> : null}
+          {!online ? <p className="hint">离线时无法读取、恢复或删除回收区，联网后再试。</p> : null}
         </>
       ) : (
         <>

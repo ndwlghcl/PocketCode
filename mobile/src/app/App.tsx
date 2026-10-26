@@ -13,6 +13,9 @@ import { SearchScreen } from '../features/search/SearchScreen';
 import { GitScreen } from '../features/git/GitScreen';
 import { ShareScreen } from '../features/sharing/ShareScreen';
 import { useConnection } from './useConnection';
+import { SettingsScreen } from '../features/settings/SettingsScreen';
+import { Icon } from '../ui/Icon';
+import { closeTopLayer } from './backLayers';
 
 type Screen =
   | { name: 'projects' }
@@ -21,7 +24,7 @@ type Screen =
   | { name: 'git'; project: ProjectSummary }
   | { name: 'share'; project: ProjectSummary };
 
-type HomeTab = 'projects' | 'drafts';
+type HomeTab = 'projects' | 'drafts' | 'settings';
 
 interface Viewer {
   project: ProjectSummary;
@@ -54,7 +57,7 @@ function statusView(connection: ReturnType<typeof useConnection>): {
     case 'probing':
       return { dot: 'unknown', text: '正在检查连接…' };
     case 'unpaired':
-      return { dot: 'offline', text: '未配对 · 点右侧「连接」扫码' };
+      return { dot: 'offline', text: '未配对 · 点右侧连接电脑' };
   }
 }
 
@@ -73,6 +76,15 @@ export function App() {
   const viewerBackGuard = useRef<(() => boolean) | null>(null);
   const viewerHistory = useRef<Viewer[]>([]);
   const navigationId = useRef(0);
+  const connectionScroll = useRef(0);
+  useEffect(() => {
+    if (typeof window !== 'undefined') window.scrollTo(0, 0);
+  }, [homeTab]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (showConnection) { connectionScroll.current = window.scrollY; window.scrollTo(0, 0); }
+    else window.scrollTo(0, connectionScroll.current);
+  }, [showConnection]);
   const backFromViewer = useCallback(() => {
     setViewer(viewerHistory.current.pop() ?? null);
   }, []);
@@ -89,25 +101,26 @@ export function App() {
             fingerprint: connection.pairing.fingerprint,
           })
         : null,
-    [connection.pairing],
+    // 定时探测会重新读取配对对象；凭据没变时复用 client，避免各页面反复读缓存。
+    [connection.pairing?.baseUrl, connection.pairing?.deviceToken, connection.pairing?.fingerprint],
   );
 
   // Android 返回键/侧滑返回：编辑态先退出编辑（草稿保留）→ 逐级回退 → 退出应用。
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     const handlePromise = CapApp.addListener('backButton', () => {
-      if (viewer && viewerBackGuard.current?.()) {
-        return; // 文件页内部已处理（如退出编辑模式）
-      }
-      if (viewer) {
-        backFromViewer();
-      } else if (showConnection) {
+      if (closeTopLayer()) return;
+      if (showConnection) {
         setShowConnection(false);
+      } else if (viewer && viewerBackGuard.current?.()) {
+        return; // 文件页内部已处理（如退出编辑模式）
+      } else if (viewer) {
+        backFromViewer();
       } else if (screen.name === 'explorer') {
         setScreen({ name: 'projects' });
       } else if (screen.name === 'search' || screen.name === 'git' || screen.name === 'share') {
         setScreen({ name: 'explorer', project: screen.project });
-      } else if (homeTab === 'drafts') {
+      } else if (homeTab !== 'projects') {
         setHomeTab('projects');
       } else {
         void CapApp.exitApp();
@@ -133,16 +146,18 @@ export function App() {
   };
 
   return (
-    <div className="app">
+    <div className={`app ${atHome ? 'app--home' : ''}`}>
       <header className={`statusbar ${immersive ? 'statusbar--hidden' : ''}`}>
         <span className={`statusbar__dot statusbar__dot--${dot}`} />
         <span className="statusbar__text">{text}</span>
         <button
           type="button"
           className="statusbar__action"
+          aria-label={connectionOpen ? '关闭连接管理' : '连接管理'}
+          title={connectionOpen ? '关闭连接管理' : '连接管理'}
           onClick={() => setShowConnection((value) => !value)}
         >
-          {connectionOpen ? '‹ 返回' : '⚙ 连接'}
+          <Icon name={connectionOpen ? 'back' : 'system'} size={18} />
         </button>
       </header>
       <main className={`screen ${immersive ? 'screen--immersive' : ''}`}>
@@ -176,6 +191,7 @@ export function App() {
         ) : screen.name === 'explorer' ? (
           <ExplorerScreen
             client={client}
+            lastProbe={connection.lastProbe}
             project={screen.project}
             online={online}
             revoked={revoked}
@@ -226,7 +242,9 @@ export function App() {
             onBack={() => setScreen({ name: 'explorer', project: screen.project })}
           />
         ) : screen.name === 'projects' ? (
-          revoked ? (
+          homeTab === 'settings' ? (
+            <SettingsScreen connectionText={text} onOpenConnection={() => setShowConnection(true)} />
+          ) : revoked ? (
             <section>
               <h1 className="screen__title">项目</h1>
               <div className="result result--bad">
@@ -251,6 +269,7 @@ export function App() {
           ) : (
             <ProjectListScreen
               client={client}
+              lastProbe={connection.lastProbe}
               paired={connection.pairing !== null}
               online={online}
               onOpenProject={(project) => setScreen({ name: 'explorer', project })}
@@ -259,22 +278,23 @@ export function App() {
         ) : null}
       </main>
       {/* 底部导航只在首页（项目/草稿箱）出现；进项目/文件后消失（用户要求，避免占空间） */}
-      {atHome && !revoked ? (
+      {atHome ? (
         <nav className="bottomnav">
           <button
             type="button"
             className={`bottomnav__btn ${homeTab === 'projects' ? 'bottomnav__btn--active' : ''}`}
             onClick={() => setHomeTab('projects')}
           >
-            项目
+            <Icon name="folder" size={21} /><span>项目</span>
           </button>
           <button
             type="button"
             className={`bottomnav__btn ${homeTab === 'drafts' ? 'bottomnav__btn--active' : ''}`}
             onClick={() => setHomeTab('drafts')}
           >
-            草稿箱
+            <Icon name="drafts" size={21} /><span>草稿箱</span>
           </button>
+          <button type="button" className={`bottomnav__btn ${homeTab === 'settings' ? 'bottomnav__btn--active' : ''}`} onClick={() => setHomeTab('settings')}><Icon name="settings" size={21} /><span>设置</span></button>
         </nav>
       ) : null}
     </div>
