@@ -74,6 +74,13 @@ Python 关联接口复用现有错误码：非 `.py` 文件返回 415 `UNSUPPORT
 
 ## 变更规则
 
+`POST /v1/projects/{project_id}/files/move` 复用错误码：路径格式错误为
+400 `PATH_INVALID`，链接或越界为 403 `PATH_FORBIDDEN`，来源文件/目标父目录
+不存在为 404 `FILE_NOT_FOUND`，未授权项目为 404 `PROJECT_NOT_FOUND`，目标被
+占用为 409 `ALREADY_EXISTS`，来源版本变化为 409 `VERSION_CONFLICT`，来源超过
+4 MiB 为 413 `FILE_TOO_LARGE`，文件系统不支持不覆盖移动或 I/O 失败为
+500 `IO_ERROR`。鉴权沿用 401 `UNAUTHORIZED` / `DEVICE_REVOKED`。
+
 凡新增/修改错误码、字段或状态码：必须同步更新 `contracts/openapi.yaml`、
 `contracts/errors.md`、`contracts/fixtures/`、后端实现与测试、移动端类型，
 并在 `docs/decisions/` 记录 ADR。

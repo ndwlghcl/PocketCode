@@ -24,21 +24,22 @@ export interface ProjectCacheProgress {
   truncated: boolean;
   stopped: string | null;
   issues: { path: string; reason: string }[];
+  failedPaths?: string[];
 }
 
 /** 使用现有只读接口和缓存键；不会访问或修改草稿。取消时保留已落盘的部分。 */
 export async function cacheProject(
   client: Pick<PocketCodeClient, 'getManifest' | 'readFile'>,
   projectId: string,
-  options: { signal?: AbortSignal; onProgress?: (value: ProjectCacheProgress) => void; storage?: KVStorage } = {},
+  options: { signal?: AbortSignal; onProgress?: (value: ProjectCacheProgress) => void; storage?: KVStorage; paths?: ReadonlySet<string> } = {},
 ): Promise<ProjectCacheProgress> {
   const { signal, onProgress, storage = diskStorage } = options;
   const progress: ProjectCacheProgress = {
     total: 0, completed: 0, saved: 0, reused: 0, skipped: 0, failed: 0,
-    bytes: 0, truncated: false, stopped: null, issues: [],
+    bytes: 0, truncated: false, stopped: null, issues: [], failedPaths: [],
   };
   // 界面只展示前 50 个原因，避免大项目反复复制全部问题列表。
-  const snapshot = () => ({ ...progress, issues: progress.issues.slice(0, 50) });
+  const snapshot = () => ({ ...progress, issues: progress.issues.slice(0, 50), failedPaths: [...progress.failedPaths!] });
   let lastEmit = 0;
   const emit = () => {
     const now = Date.now();
@@ -63,6 +64,7 @@ export async function cacheProject(
       const skip = excluded || EXCLUDED_DIRS.has(node.name.toLowerCase());
       for (let i = node.children.length - 1; i >= 0; i--) stack.push({ node: node.children[i], excluded: skip });
     } else {
+      if (options.paths && !options.paths.has(node.path)) continue;
       files.push({ file: node, reason: excluded ? '依赖或构建目录' : SENSITIVE_FILE.test(node.name) ? '密钥或敏感配置' : node.size > MAX_FILE_BYTES ? '超过单文件 1 MB 上限' : undefined });
     }
   }
@@ -109,7 +111,7 @@ export async function cacheProject(
         const code = error instanceof PocketCodeError ? error.code : null;
         const reason = error instanceof Error ? error.message : '缓存失败';
         if (code === 'UNSUPPORTED_FORMAT' || code === 'FILE_TOO_LARGE') progress.skipped++;
-        else progress.failed++;
+        else { progress.failed++; progress.failedPaths!.push(file.path); }
         progress.issues.push({ path: file.path, reason });
         if (code === 'OFFLINE' || (error instanceof PocketCodeError && error.status === 401) || code === 'PROJECT_NOT_FOUND' || !(error instanceof PocketCodeError)) {
           progress.stopped = reason;

@@ -20,6 +20,7 @@ export interface BridgeRequestOptions {
 }
 
 interface PocketCodeBridgePlugin {
+  writeShareArchive(options: { name: string; base64: string }): Promise<{ uri: string }>;
   request(options: BridgeRequestOptions): Promise<{ status: number; body: string }>;
   secureSet(options: { key: string; value: string }): Promise<void>;
   secureGet(options: { key: string }): Promise<{ value: string | null }>;
@@ -110,7 +111,7 @@ export interface KVStorage {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
   remove(key: string): Promise<void>;
-  /** 按前缀枚举键名（草稿箱跨文件列表用）；实现需保证失败返回空数组而非抛错。 */
+  /** 按前缀枚举键名；失败必须抛错，不能把读取失败冒充空草稿箱。 */
   keys(prefix: string): Promise<string[]>;
 }
 
@@ -128,41 +129,25 @@ export const diskStorage: KVStorage = {
       const result = await PocketCodeBridge.dataGet({ key });
       return result.value;
     }
-    try {
-      return localStorage.getItem(key);
-    } catch {
-      return null;
-    }
+    return localStorage.getItem(key);
   },
   async remove(key: string): Promise<void> {
     if (Capacitor.isNativePlatform()) {
       await PocketCodeBridge.dataDelete({ key });
       return;
     }
-    try {
-      localStorage.removeItem(key);
-    } catch {
-      // 忽略
-    }
+    localStorage.removeItem(key);
   },
   async keys(prefix: string): Promise<string[]> {
     if (Capacitor.isNativePlatform()) {
-      try {
-        const result = await PocketCodeBridge.dataKeys({ prefix });
-        return result.keys ?? [];
-      } catch {
-        return [];
-      }
+      const result = await PocketCodeBridge.dataKeys({ prefix });
+      return result.keys ?? [];
     }
-    try {
-      const found: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key !== null && key.startsWith(prefix)) found.push(key);
-      }
-      return found.sort();
-    } catch {
-      return [];
+    const found: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key !== null && key.startsWith(prefix)) found.push(key);
     }
+    return found.sort();
   },
 };

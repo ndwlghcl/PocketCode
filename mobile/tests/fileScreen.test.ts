@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   slots: [] as any[], cursor: 0, effects: [] as (() => void)[], dirty: false,
   kv: new Map<string, string>(), saved: [] as any[],
   failWrites: false,
+  failReads: false,
   readTop: null as number | null,
 }));
 vi.mock('react', async (original) => {
@@ -45,7 +46,7 @@ vi.mock('react', async (original) => {
 });
 vi.mock('../src/native', () => ({
   diskStorage: {
-    get: async (key: string) => h.kv.get(key) ?? null,
+    get: async (key: string) => { if (h.failReads) throw new Error('disk read error'); return h.kv.get(key) ?? null; },
     set: async (key: string, value: string) => {
       if (h.failWrites) throw new Error('disk full');
       h.kv.set(key, value);
@@ -54,9 +55,9 @@ vi.mock('../src/native', () => ({
     keys: async (prefix: string) => [...h.kv.keys()].filter((key) => key.startsWith(prefix)),
   },
 }));
-vi.mock('../src/storage/cacheStore', () => ({ saveCachedFile: async (_id: any, data: any) => { h.saved.push(data); } }));
+vi.mock('../src/storage/cacheStore', () => ({ saveCachedFile: async (_id: any, data: any) => { h.saved.push(data); }, loadCachedProjects: async () => null, saveCachedProjects: async () => {} }));
 vi.mock('../src/features/editor/CodeEditor', () => ({ CodeEditor: 'mock-editor' }));
-vi.mock('../src/features/sharing/share', () => ({ shareText: vi.fn() }));
+vi.mock('../src/features/sharing/share', () => ({ shareText: vi.fn(async () => ({ ok: true })) }));
 vi.mock('../src/storage/readPositionStore', () => ({
   createPositionSaver: () => ({ flush: async () => {}, push: () => {} }),
   loadReadPosition: async () => h.readTop === null ? null : { scrollTop: h.readTop },
@@ -71,26 +72,32 @@ vi.mock('../src/app/useConnection', () => ({ useConnection: () => ({
 import { FileScreen } from '../src/features/explorer/FileScreen';
 import { loadDrafts, upsertDraft } from '../src/storage/draftStore';
 import { App } from '../src/app/App';
+import { DraftEditorScreen } from '../src/features/drafts/DraftEditorScreen';
+import { DraftsScreen } from '../src/features/drafts/DraftsScreen';
+import { PocketCodeError } from '../src/api/client';
+import { shareText } from '../src/features/sharing/share';
 
 let tree: any;
 let props: any;
 let renderApp = false;
+let renderLocalDraft = false;
+let renderDraftsBox = false;
 const data = { path: 'a.py', content: 'PC OLD', version: 'sha256:' + '1'.repeat(64), encoding: 'utf-8', newline: 'LF', size: 6, mtime: '2026-10-26T00:00:00Z', read_only: false };
 const render = () => {
   h.cursor = 0; h.dirty = false;
-  tree = renderApp ? App() : FileScreen(props);
+  tree = renderApp ? App() : renderLocalDraft ? DraftEditorScreen(props) : renderDraftsBox ? DraftsScreen(props) : FileScreen(props);
   const effects = h.effects.splice(0);
   effects.forEach((fn) => fn());
 };
 const drain = async () => {
-  for (let i = 0; i < 35; i++) { await Promise.resolve(); if (h.dirty) render(); }
+  for (let i = 0; i < 70; i++) { await Promise.resolve(); if (h.dirty) render(); }
 };
 function nodes(node: any): any[] {
   if (!node || typeof node !== 'object') return [];
   if (Array.isArray(node)) return node.flatMap(nodes);
   return [node, ...nodes(node.props?.children)];
 }
-const text = (node: any): string => typeof node === 'string' ? node : Array.isArray(node) ? node.map(text).join('') : node?.props ? text(node.props.children) : '';
+const text = (node: any): string => typeof node === 'number' ? String(node) : typeof node === 'string' ? node : Array.isArray(node) ? node.map(text).join('') : node?.props ? text(node.props.children) : '';
 const button = (label: string) => {
   const found = nodes(tree).find((n) => (n.type === 'button' || n.type?.name === 'MenuItem') && (n.props['aria-label'] ?? text(n).trim()) === label);
   if (!found) throw new Error('Missing button ' + label);
@@ -104,12 +111,15 @@ beforeEach(() => {
   vi.useFakeTimers();
   h.slots = []; h.cursor = 0; h.effects = []; h.dirty = false; h.kv.clear(); h.saved = [];
   h.failWrites = false;
+  h.failReads = false;
   h.readTop = null;
   renderApp = false;
+  renderLocalDraft = false; renderDraftsBox = false;
+  vi.stubGlobal('window', { confirm: vi.fn(() => true), scrollTo: vi.fn(), scrollY: 0 });
   props = { client: {}, projectId: 'p', initialData: { ...data }, online: true, revoked: false,
     onBack() {}, registerBackGuard() {} };
 });
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 test('saving A while typing B keeps B dirty and caches only A', async () => {
   let complete: any;
@@ -134,6 +144,30 @@ test('saving A while typing B keeps B dirty and caches only A', async () => {
   await vi.advanceTimersByTimeAsync(1000); await drain();
   expect(editor().doc).toBe('PHONE B NOT ON PC');
   expect(editor().readOnly).toBe(false);
+});
+
+test('轻点仅记录符号，代码导航必须主动打开；非空选区优先复制分享', async () => {
+  render(); await drain();
+  expect(editor().onSymbolPress).toBeUndefined();
+  editor().onCursorSymbol({ symbol: 'hello', line: 1 }); await drain();
+  expect(nodes(tree).some((n) => n.type?.name === 'ActionSheet')).toBe(false);
+  expect(button('代码导航').disabled).toBe(false);
+  button('代码导航').onClick(); await drain();
+  expect(nodes(tree).some((n) => n.type?.name === 'ActionSheet')).toBe(true);
+  editor().onSelection({ text: 'hello', startLine: 1, endLine: 1 }); await drain();
+  expect(button('代码导航').disabled).toBe(true);
+  expect(button('复制')).toBeDefined(); expect(button('写旁注')).toBeDefined();
+});
+
+test('另存为使用新建的不覆盖接口，保留原文件基线和草稿', async () => {
+  props.client.createEntry = vi.fn(async () => ({ path: 'copy.py', type: 'file' }));
+  (window as any).prompt = vi.fn(() => 'copy.py');
+  render(); await drain(); await edit();
+  editor().onDocChange('MY COPY'); await drain();
+  button('更多操作').onClick(); await drain(); button('另存为新文件').onClick(); await drain();
+  expect(props.client.createEntry).toHaveBeenCalledWith('p', expect.objectContaining({ path: 'copy.py', content: 'MY COPY', type: 'file' }));
+  expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('MY COPY');
+  expect(editor().doc).toBe('MY COPY');
 });
 
 test('reading refresh preserves the active draft through editing', async () => {
@@ -255,4 +289,105 @@ test('returning from a tool menu leaves the edited buffer open and the next back
   expect(props.registerBackGuard.mock.calls.at(-1)[0]()).toBe(true); await drain();
   expect(editor().readOnly).toBe(true);
   expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('KEEP THIS BUFFER');
+});
+
+test('draft read failure is visible, preserves original bytes and blocks saving to PC', async () => {
+  await upsertDraft('p', 'a.py', { id: 'd', name: 'idea', path: 'a.py', projectId: 'p', content: 'KEEP OLD', baseVersion: data.version, savedAt: data.mtime });
+  const original = h.kv.get('pc.draft.p.a.py');
+  h.failReads = true;
+  props.client.saveFile = vi.fn();
+  render(); await drain();
+  expect(text(tree)).toContain('无法读取草稿');
+  await edit(); editor().onDocChange('NEW BUFFER'); await drain();
+  button('保存').onClick(); await drain();
+  expect(props.client.saveFile).not.toHaveBeenCalled();
+  expect(h.kv.get('pc.draft.p.a.py')).toBe(original);
+  expect(editor().doc).toBe('NEW BUFFER');
+});
+
+test('draft box opens the complete local draft without pairing, project list or file cache', async () => {
+  const draft = { id: 'd', name: 'idea', path: 'a.py', projectId: 'removed-project', content: 'LOCAL ONLY', baseVersion: data.version, savedAt: data.mtime };
+  await upsertDraft(draft.projectId, draft.path, draft);
+  renderDraftsBox = true;
+  props = { client: null, online: false, onOpenDraft: vi.fn() };
+  render(); await drain();
+  expect(button('去编辑').disabled).toBe(false);
+  button('去编辑').onClick(); await drain();
+  expect(props.onOpenDraft).toHaveBeenCalledWith(expect.objectContaining({ content: 'LOCAL ONLY' }));
+});
+
+test('a hanging computer request does not delay the local draft list', async () => {
+  await upsertDraft('p', 'a.py', { id: 'd', name: 'idea', path: 'a.py', projectId: 'p', content: 'LOCAL', baseVersion: data.version, savedAt: data.mtime });
+  renderDraftsBox = true;
+  props = { client: { listProjects: () => new Promise(() => {}) }, online: true, onOpenDraft: vi.fn() };
+  render(); await drain();
+  expect(text(tree)).toContain('共 1 份草稿');
+  expect(button('去编辑').disabled).toBe(false);
+});
+
+test('local draft editor saves and exports without a source; failed persistence prevents leaving', async () => {
+  const draft = { id: 'd', name: 'idea', path: 'a.py', projectId: 'removed-project', content: 'OLD', baseVersion: data.version, savedAt: data.mtime, encoding: 'utf-8-bom', newline: 'CRLF' };
+  await upsertDraft(draft.projectId, draft.path, draft as any);
+  renderLocalDraft = true;
+  props = { draft, sourceAvailable: false, onBack: vi.fn(), onOpenSource: vi.fn(), registerBackGuard: vi.fn() };
+  render(); await drain();
+  expect(text(tree)).toContain('来源不可用');
+  editor().onDocChange('MY NEW IDEA'); await drain();
+  h.failWrites = true;
+  button('保存草稿并返回').onClick(); await drain();
+  expect(props.onBack).not.toHaveBeenCalled();
+  expect(editor().doc).toBe('MY NEW IDEA');
+  button('导出草稿').onClick(); await drain();
+  expect(shareText).toHaveBeenCalledWith('草稿 · idea', 'MY NEW IDEA');
+  h.failWrites = false;
+  button('保存草稿并返回').onClick(); await drain();
+  expect(props.onBack).toHaveBeenCalledTimes(1);
+  expect((await loadDrafts(draft.projectId, draft.path)).drafts[0]).toMatchObject({ content: 'MY NEW IDEA', encoding: 'utf-8-bom', newline: 'CRLF' });
+});
+
+test('opening the source first persists the local buffer and source errors do not discard it', async () => {
+  const draft = { id: 'd', name: 'idea', path: 'a.py', projectId: 'p', content: 'OLD', baseVersion: data.version, savedAt: data.mtime };
+  await upsertDraft('p', 'a.py', draft);
+  renderLocalDraft = true;
+  props = { draft, sourceAvailable: true, onBack: vi.fn(), registerBackGuard: vi.fn(), onOpenSource: vi.fn(async () => {
+    expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('NEW');
+    throw new Error('来源文件已移除');
+  }) };
+  render(); await drain(); editor().onDocChange('NEW'); await drain();
+  button('打开来源文件，检查并保存到电脑').onClick(); await drain();
+  expect(props.onOpenSource).toHaveBeenCalledTimes(1);
+  expect(text(tree)).toContain('来源文件已移除');
+  expect(editor().doc).toBe('NEW');
+});
+
+test('conflict diff reads the latest PC version and does not overwrite either side', async () => {
+  props.client.saveFile = vi.fn(async (_id: string, _body: any) => { throw new PocketCodeError(409, 'VERSION_CONFLICT', 'conflict', undefined, { current_version: 'sha256:' + '2'.repeat(64) }); });
+  const fresh = { ...data, content: 'PC CHANGED', version: 'sha256:' + '3'.repeat(64) };
+  props.client.readFile = vi.fn(async () => fresh);
+  render(); await drain(); await edit(); editor().onDocChange('MY DRAFT'); await drain();
+  button('保存').onClick(); await drain();
+  expect(button('查看差异').className).toBe('btn btn--primary');
+  expect(button('覆盖电脑文件').className).toBe('btn');
+  button('查看差异').onClick(); await drain();
+  const panel = nodes(tree).find((n) => n.type?.name === 'ConflictDiff');
+  expect(panel.props).toMatchObject({ computer: 'PC CHANGED', draft: 'MY DRAFT' });
+  expect(props.client.saveFile).toHaveBeenCalledTimes(1);
+  expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('MY DRAFT');
+  panel.props.onClose(); await drain();
+  button('覆盖电脑文件').onClick(); await drain();
+  expect(props.client.saveFile.mock.calls.at(-1)[1].base_version).toBe(fresh.version);
+  expect(text(tree)).toContain('查看差异'); // 电脑再次冲突，继续保留草稿。
+});
+
+test('keeping a conflicted draft or cancelling discard never deletes it', async () => {
+  props.client.saveFile = async () => { throw new PocketCodeError(409, 'VERSION_CONFLICT', 'conflict', undefined, { current_version: data.version }); };
+  render(); await drain(); await edit(); editor().onDocChange('KEEP ME'); await drain();
+  button('保存').onClick(); await drain();
+  vi.mocked(window.confirm).mockReturnValue(false);
+  button('放弃修改，加载电脑版').onClick(); await drain();
+  expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('KEEP ME');
+  button('保留草稿，继续编辑').onClick(); await drain();
+  expect(editor().doc).toBe('KEEP ME');
+  expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('KEEP ME');
+  expect(text(tree)).toContain('草稿已保留');
 });

@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react';
 
 const paths = {
   folder: 'M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z',
+  bookmark: 'M6 3h12v18l-6-4-6 4Z',
   file: 'M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10Zm0 0v7h7M8 14h8M8 17h5',
   code: 'm8 8-4 4 4 4m8-8 4 4-4 4m-3-12-2 16',
   back: 'm14 6-6 6 6 6',
@@ -17,6 +18,7 @@ const paths = {
   drafts: 'M14 3H5v17h14v-8M9 16l4-1 9-9-4-4-9 9Z',
   settings: 'M4 7h16M4 17h16M8 4v6m8 4v6',
   check: 'm5 12 4 4L19 6',
+  minus: 'M5 12h14',
   close: 'm6 6 12 12M6 18 18 6',
   sun: 'M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
   moon: 'M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10Z',

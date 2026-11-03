@@ -24,6 +24,7 @@ export interface CachedManifest {
   fetchedAt: string;
   revision: number;
   root: ManifestDir;
+  truncated?: boolean;
 }
 
 export interface CachedFile {
@@ -101,7 +102,7 @@ export async function loadCachedManifest(
 
 export async function saveCachedManifest(
   projectId: string,
-  manifest: { revision: number; root: ManifestDir },
+  manifest: { revision: number; root: ManifestDir; truncated?: boolean },
   storage: KVStorage = diskStorage,
 ): Promise<boolean> {
   return writeJson(
@@ -110,6 +111,7 @@ export async function saveCachedManifest(
       fetchedAt: new Date().toISOString(),
       revision: manifest.revision,
       root: manifest.root,
+      truncated: manifest.truncated ?? false,
     },
     storage,
   );
@@ -117,6 +119,10 @@ export async function saveCachedManifest(
 
 function fileKey(projectId: string, path: string): string {
   return `${FILE_PREFIX}${projectId}.${encodeURIComponent(path)}`;
+}
+
+export async function removeCachedFile(projectId: string, path: string, storage: KVStorage = diskStorage): Promise<void> {
+  await storage.remove(fileKey(projectId, path));
 }
 
 export async function loadCachedFile(

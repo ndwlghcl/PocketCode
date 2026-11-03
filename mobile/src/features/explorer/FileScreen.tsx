@@ -15,13 +15,15 @@ import {
   buildSnippetText,
   type ShareSource,
 } from '../sharing/bundle';
-import { shareText } from '../sharing/share';
+import { copyText, shareText } from '../sharing/share';
+import { ReadingTools } from './ReadingTools';
 import { PythonContextPanel, type ContextQuery, type ContextView } from '../related/PythonContextPanel';
 import {
   createPositionSaver,
   loadReadPosition,
 } from '../../storage/readPositionStore';
 import { useAppearance } from '../../app/Appearance';
+import { ConflictDiff } from './ConflictDiff';
 import { Icon } from '../../ui/Icon';
 import { ActionSheet, MenuItem } from '../../ui/Controls';
 import {
@@ -54,11 +56,11 @@ interface Props {
   initialLine?: number;
   projectName?: string;
   onOpenRelated?: (data: FileContentResponse, line: number,
-    origin: { data: FileContentResponse; mode: 'read' | 'edit' }) => void;
+    origin: { data: FileContentResponse; mode: 'read' | 'edit'; fromCache?: boolean; cachedAt?: string }) => void;
   initialMode?: 'read' | 'edit';
 }
 
-/** 底部抽屉：代码大纲，或长按符号后的操作单（PRD §4.2/§4.3，主动触发防误触）。 */
+/** 底部抽屉：代码大纲，或主动打开的符号操作单。 */
 type Drawer =
   | { type: 'outline' }
   | {
@@ -119,6 +121,7 @@ export function FileScreen({
   initialMode = 'read',
 }: Props) {
   const [data, setData] = useState<FileContentResponse>(initialData);
+  const [cacheSource, setCacheSource] = useState(!!fromCache);
   const [mode, setMode] = useState<'read' | 'edit'>(initialMode);
   const [editText, setEditText] = useState(initialData.content);
   const [editState, setEditState] = useState<EditState>('clean');
@@ -149,6 +152,7 @@ export function FileScreen({
   const jumpNonceRef = useRef(0);
   /** 跳转前所在位置：非 null 时显示「↩ 返回原位置」。 */
   const [returnTop, setReturnTop] = useState<number | null>(null);
+  const jumpHistory = useRef<number[]>([]);
   /** 应用返回：写入 initialScrollTop 通道。 */
   const [returnScrollTop, setReturnScrollTop] = useState<number | null>(null);
   /** Python 诊断（S4d）：null=未检查；检查后波浪线 + 抽屉列表。 */
@@ -164,6 +168,10 @@ export function FileScreen({
   const [sharing, setSharing] = useState(false);
   const [contextQuery, setContextQuery] = useState<ContextQuery | null>(null);
   const cursorSymbolRef = useRef<{ symbol: string; line: number } | null>(null);
+  const [cursorSymbol, setCursorSymbol] = useState<{ symbol: string; line: number } | null>(null);
+  const [cursorLine, setCursorLine] = useState(1);
+  const [readingTools, setReadingTools] = useState<{ line: number; endLine: number } | null>(null);
+  useEffect(() => { setSnippet(null); setCursorSymbol(null); cursorSymbolRef.current = null; }, [mode]);
 
   // 全屏状态同步给根布局（隐藏状态栏与页边距）；卸载时必还原
   useEffect(() => {
@@ -183,6 +191,8 @@ export function FileScreen({
   const savingRef = useRef(false);
   const editRevisionRef = useRef(0);
   const queueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const [conflictPreview, setConflictPreview] = useState<FileContentResponse | null>(null);
+  const [diffBusy, setDiffBusy] = useState(false);
 
   // ---- 阅读位置（S4a）：滚动容器在 CodeMirror 内部，位置落原生磁盘 KV ----
   const positionSaverRef = useRef(createPositionSaver(projectId, initialData.path));
@@ -256,7 +266,12 @@ export function FileScreen({
         baseVersionRef.current = active.baseVersion;
         setEditState(active.content !== initialData.content ? 'dirty' : 'clean');
       }
-    })();
+    })().catch((cause) => {
+      if (!cancelled) {
+        setLocalDraftState('error');
+        setMessage(cause instanceof Error ? cause.message : '本地草稿读取失败，已阻止覆盖写入');
+      }
+    });
     return () => {
       cancelled = true;
     };
@@ -279,6 +294,9 @@ export function FileScreen({
         content: text,
         baseVersion: baseVersionRef.current,
         savedAt: new Date().toISOString(),
+        encoding: data.encoding,
+        newline: data.newline,
+        projectName,
       };
       // 连续失焦/自动保存都应更新同一份草稿，不能在落盘等待期间生成新 id。
       if (!outgoingId) {
@@ -297,7 +315,7 @@ export function FileScreen({
         return null;
       });
     },
-    [applyStored, enqueue, initialData.path, projectId],
+    [applyStored, enqueue, initialData.path, projectId, data.encoding, data.newline, projectName],
   );
 
   const onEditChange = (value: string) => {
@@ -339,7 +357,7 @@ export function FileScreen({
       setMessage(null);
       try {
         // 请求中断/页面卸载前，至少先把本次发送的正文保留到本机。
-        await flushActiveDraft(submittedContent);
+        if (!await flushActiveDraft(submittedContent)) { setEditState('dirty'); return; }
         const response = await client.saveFile(projectId, {
           path: initialData.path,
           base_version: overrideBaseVersion ?? baseVersionRef.current,
@@ -355,6 +373,7 @@ export function FileScreen({
           mtime: response.mtime,
         };
         setData(updated);
+        setCacheSource(false);
         void saveCachedFile(projectId, updated).catch(() => {
           setMessage('电脑保存成功，但本地缓存更新失败。');
         });
@@ -374,6 +393,9 @@ export function FileScreen({
             content: persistedContent,
             baseVersion: response.version,
             savedAt: new Date().toISOString(),
+            encoding: data.encoding,
+            newline: data.newline,
+            projectName,
           });
         });
         applyStored(stored);
@@ -393,6 +415,7 @@ export function FileScreen({
         }
       } catch (error) {
         if (error instanceof PocketCodeError && error.code === 'VERSION_CONFLICT') {
+          setConflictPreview(null);
           setConflictVersion(
             (error.details?.current_version as string | undefined) ?? null,
           );
@@ -422,6 +445,7 @@ export function FileScreen({
       flushActiveDraft,
       initialData.path,
       projectId,
+      projectName,
       revoked,
       switchBusy,
     ],
@@ -431,7 +455,7 @@ export function FileScreen({
     if (!conflictVersion) return;
     const confirmed = window.confirm(
       '将用手机上的内容覆盖电脑上的最新版本。\n' +
-        '被覆盖的电脑内容已自动保存快照，可恢复。\n确认覆盖？',
+        '覆盖前电脑端会尝试创建快照；建议先查看差异。\n确认覆盖？',
     );
     if (confirmed) void saveToPc(conflictVersion);
   };
@@ -446,6 +470,7 @@ export function FileScreen({
     try {
       const fresh = await client.readFile(projectId, initialData.path);
       setData(fresh);
+      setCacheSource(false);
       void saveCachedFile(projectId, fresh);
       if (!activeDraftIdRef.current) {
         setEditText(fresh.content);
@@ -470,6 +495,7 @@ export function FileScreen({
       setMessage('无法从电脑加载最新版本');
       return;
     }
+    if (!window.confirm('删除当前活动草稿并加载电脑版？其他草稿会保留。此操作会放弃当前修改。')) return;
     cancelPendingAutosave();
     setSwitchBusy(true);
     try {
@@ -482,6 +508,7 @@ export function FileScreen({
       applyStored(stored);
       const next = stored.drafts.find((draft) => draft.id === stored.activeId);
       setData(fresh);
+      setCacheSource(false);
       void saveCachedFile(projectId, fresh).catch(() => undefined);
       setEditText(next?.content ?? fresh.content);
       editTextRef.current = next?.content ?? fresh.content;
@@ -521,6 +548,8 @@ export function FileScreen({
       baseVersionRef.current = freshTarget.baseVersion;
       setEditState(freshTarget.content !== data.content ? 'dirty' : 'clean');
       setConflictVersion(null);
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : '草稿切换失败');
     } finally {
       setSwitchBusy(false);
     }
@@ -548,10 +577,15 @@ export function FileScreen({
         content: editTextRef.current,
         baseVersion: baseVersionRef.current,
         savedAt: new Date().toISOString(),
+        encoding: data.encoding,
+        newline: data.newline,
+        projectName,
       };
       const stored = await enqueue(() => upsertDraft(projectId, initialData.path, draft));
       applyStored(stored);
       setEditState((state) => (state === 'clean' ? 'clean' : state));
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : '新建草稿失败');
     } finally {
       setSwitchBusy(false);
     }
@@ -577,6 +611,8 @@ export function FileScreen({
         setEditState('clean');
       }
       setConflictVersion(null);
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : '删除草稿失败');
     } finally {
       setSwitchBusy(false);
     }
@@ -594,6 +630,8 @@ export function FileScreen({
         renameDraft(projectId, initialData.path, id, name),
       );
       if (stored) applyStored(stored);
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : '重命名失败');
     } finally {
       setSwitchBusy(false);
     }
@@ -665,17 +703,17 @@ export function FileScreen({
 
   /** 跳到指定行（大纲/符号/诊断共用）：记录原位置以便返回。 */
   const jumpToLine = useCallback((line: number) => {
-    setReturnTop((previous) =>
-      previous === null && lastReadTopRef.current !== null ? lastReadTopRef.current : previous,
-    );
+    const origin = lastReadTopRef.current ?? savedReadTop ?? 0;
+    jumpHistory.current = [...jumpHistory.current, origin].slice(-20);
+    setReturnTop(origin);
     setDrawer(null);
     setScrollRequest({ line, nonce: ++jumpNonceRef.current });
-  }, []);
+  }, [savedReadTop]);
 
   const goBackToOrigin = useCallback(() => {
     if (returnTop === null) return;
-    setReturnScrollTop(returnTop);
-    setReturnTop(null);
+    setReturnScrollTop(jumpHistory.current.pop() ?? returnTop);
+    setReturnTop(jumpHistory.current.at(-1) ?? null);
     setScrollRequest(null);
   }, [returnTop]);
 
@@ -684,7 +722,7 @@ export function FileScreen({
   }, []);
 
   // ---- 分享（S4f「给哥哥看」）：来源如实标注（PRD §8.1） ----
-  const currentSource: ShareSource = fromCache ? 'cache' : 'pc';
+  const currentSource: ShareSource = cacheSource ? 'cache' : 'pc';
 
   const shareSnippet = useCallback(
     async (selection: { text: string; startLine: number; endLine: number }) => {
@@ -787,9 +825,9 @@ export function FileScreen({
     setContextQuery({ view, request: {
       path: data.path, symbol, line,
       ...(mode === 'edit' ? { content: editTextRef.current, source: 'draft' as const }
-        : fromCache ? { content: data.content, source: 'cache' as const } : {}),
+        : cacheSource ? { content: data.content, source: 'cache' as const } : {}),
     } });
-  }, [isPythonFile, client, online, revoked, data, mode, fromCache]);
+  }, [isPythonFile, client, online, revoked, data, mode, cacheSource]);
 
   const navigateContext = async (location: PythonLocation | PythonRelatedFile) => {
     if (!client || !online || revoked) throw new Error('电脑不可用，暂时无法跳转。');
@@ -805,6 +843,7 @@ export function FileScreen({
     void saveCachedFile(projectId, fresh).catch(() => undefined);
     if (location.path === data.path) {
       setData(fresh);
+      setCacheSource(false);
       if (!activeDraftIdRef.current) {
         setEditText(fresh.content);
         baseVersionRef.current = fresh.version;
@@ -818,7 +857,7 @@ export function FileScreen({
         if (!(await flushActiveDraft())) throw new Error('请先处理本地草稿保存失败，再跳转文件。');
       }
       await positionSaverRef.current.flush();
-      onOpenRelated(fresh, location.line, { data, mode });
+      onOpenRelated(fresh, location.line, { data, mode, ...(fromCache ? { fromCache: cacheSource, cachedAt } : {}) });
     }
   };
 
@@ -1007,22 +1046,31 @@ export function FileScreen({
   // 片段分享浮标：只读模式有非空选区时出现（抬高避免和返回浮标重叠）
   const snippetPill =
     mode === 'read' && snippet !== null ? (
-      <button
-        type="button"
-        className="return-pill return-pill--raised"
-        onClick={() => void shareSnippet(snippet)}
-        disabled={sharing}
-      >
-        ↗ 分享选中（
-        {snippet.startLine === snippet.endLine
-          ? `L${snippet.startLine}`
-          : `L${snippet.startLine}-L${snippet.endLine}`}
-        ）
-      </button>
+      <div className="return-pill return-pill--raised selection-actions" role="toolbar" aria-label="选中代码操作">
+        <button type="button" onClick={() => { void copyText(snippet.text).then((result) => setMessage(result.ok ? '已复制选中代码' : result.message ?? '复制失败')); }}>复制</button>
+        <button type="button" onClick={() => void shareSnippet(snippet)} disabled={sharing}>分享选中</button>
+        <button type="button" onClick={() => setReadingTools({ line: snippet.startLine, endLine: snippet.endLine })}>写旁注</button>
+      </div>
     ) : null;
 
   const toggleImmersiveWrap = () => {
     updateAppearance({ wrap: !wrap });
+  };
+
+  const saveAs = async () => {
+    if (!client || !online || revoked || savingRef.current || switchBusy) return;
+    const proposed = data.path.replace(/(\.[^/.]+)?$/, '-手机版本$1');
+    const path = window.prompt('另存为项目内新文件（不会覆盖已有文件）', proposed)?.trim();
+    if (!path) return;
+    const content = editTextRef.current;
+    savingRef.current = true; setSaving(true);
+    try {
+      cancelPendingAutosave();
+      if (!await flushActiveDraft(content)) return;
+      await client.createEntry(projectId, { path, type: 'file', content, encoding: data.encoding, newline: data.newline });
+      setMessage(`已另存为 ${path}。原文件和当前草稿保留，可在目录中打开新文件。`);
+    } catch (cause) { setMessage(cause instanceof Error ? cause.message : '另存为失败，草稿保留'); }
+    finally { savingRef.current = false; setSaving(false); }
   };
 
   // 共享片段：草稿选择器与冲突处理块（普通布局与全屏编辑都用）
@@ -1047,18 +1095,29 @@ export function FileScreen({
       <div className="result result--bad">
         <p className="result__title">✘ 电脑上的文件已被其他程序修改</p>
         <p className="result__hint">
-          你的草稿基于较早的版本。可选择：用手机内容覆盖电脑（电脑端已有
-          快照可恢复）、保留草稿稍后处理，或放弃修改并加载电脑最新版。
+          你的草稿基于较早的版本。先查看差异，或保留草稿继续编辑。覆盖与放弃修改需要单独确认。
         </p>
         <div className="btnrow">
-          <button type="button" className="btn btn--primary" onClick={confirmOverwrite}>
-            覆盖电脑文件
+          <button type="button" className="btn btn--primary" disabled={!client || !online || revoked || diffBusy || saving || switchBusy} onClick={() => {
+            if (!client) return;
+            setDiffBusy(true);
+            void (async () => {
+              if (!await flushActiveDraft()) return;
+              const fresh = await client.readFile(projectId, initialData.path);
+              setConflictPreview(fresh);
+              setConflictVersion(fresh.version);
+            })().catch((cause) => setMessage(cause instanceof Error ? cause.message : '差异读取失败，草稿保留')).finally(() => setDiffBusy(false));
+          }}>
+            {diffBusy ? '正在读取差异…' : '查看差异'}
           </button>
+          <button type="button" className="btn" disabled={saving || switchBusy || diffBusy} onClick={() => { void flushActiveDraft().then((stored) => { if (stored) { setEditState('dirty'); setConflictVersion(null); setMessage('草稿已保留，可以继续编辑或稍后处理。'); } }); }}>保留草稿，继续编辑</button>
+          <button type="button" className="btn" disabled={!client || !online || revoked || saving || switchBusy || diffBusy} onClick={() => void saveAs()}>另存为新文件</button>
+          <button type="button" className="btn" disabled={!online || revoked || !conflictVersion || saving || switchBusy || diffBusy} onClick={confirmOverwrite}>覆盖电脑文件</button>
           <button
             type="button"
             className="btn"
             onClick={() => void discardAndReload()}
-            disabled={!online}
+            disabled={!online || revoked || saving || switchBusy || diffBusy}
           >
             放弃修改，加载电脑版
           </button>
@@ -1079,10 +1138,11 @@ export function FileScreen({
   const withMenuClosed = (action: () => void) => () => { setMoreVisible(false); action(); };
   return (
     <section className={`file-workspace ${immersive ? 'file-workspace--full' : ''}`}>
+      {conflictPreview && <ConflictDiff computer={conflictPreview.content} draft={editText} onClose={() => setConflictPreview(null)} />}
       {!focusMode && <>
         <header className="code-toolbar">
           <button type="button" className="icon-button" aria-label={mode === 'edit' ? '完成编辑' : '返回文件浏览'} title={mode === 'edit' ? '完成编辑' : '返回文件浏览'} disabled={mode === 'edit' && (saving || switchBusy)} onClick={mode === 'edit' ? exitEditToRead : onBack}><Icon name={mode === 'edit' ? 'check' : 'back'} /></button>
-          <div className="code-title"><strong>{data.path.split('/').pop()}</strong><small>{projectName} · {mode === 'edit' ? '编辑草稿' : '只读'}{hasUnsavedDraft && mode === 'read' ? ' · 有草稿' : ''}</small></div>
+          <div className="code-title"><strong>{data.path.split('/').pop()}</strong><small>{projectName} · {mode === 'edit' ? '手机草稿' : cacheSource ? '本地缓存 · 只读' : '电脑文件 · 只读'}{hasUnsavedDraft && mode === 'read' ? ' · 有草稿' : ''}</small></div>
           <button type="button" className="icon-button" aria-label="搜索代码" title="搜索代码" aria-pressed={searchVisible} onClick={() => setSearchVisible(!searchVisible)}><Icon name="search" /></button>
           {mode === 'read' ? <button type="button" className="icon-button" aria-label="编辑" title={readOnlyBlocked ? '只读文件' : '编辑'} disabled={readOnlyBlocked || revoked} onClick={() => setMode('edit')}><Icon name="edit" /></button>
             : <button type="button" className="icon-button" aria-label="保存" title="保存到电脑" onClick={() => void saveToPc()} disabled={saving || revoked || switchBusy || (editState !== 'dirty' && editState !== 'conflict')}><Icon name="save" /></button>}
@@ -1091,7 +1151,7 @@ export function FileScreen({
         {searchVisible && <form className="code-search" onSubmit={(event) => { event.preventDefault(); findNext(); }}><input aria-label="搜索代码内容" placeholder="在文件中查找…" value={searchQuery} onChange={(event) => { searchOffset.current = 0; setSearchQuery(event.target.value); }} /><button type="submit">下一处</button><button type="button" aria-label="关闭搜索" onClick={() => setSearchVisible(false)}><Icon name="close" size={17} /></button></form>}
         {mode === 'edit' && <div className="draft-bar">{draftsSelect}<span title={EDIT_STATE_TEXT[editState]}>{localDraftState === 'error' ? '本地草稿保存失败' : localDraftState === 'pending' ? '草稿待保存' : editState === 'dirty' ? '本机已存 · 待同步' : IMMERSIVE_STATE_TEXT[editState]}{switchBusy ? '…' : ''}</span></div>}
       </>}
-      {fromCache && <p className="file-notice">本地缓存 · {cachedAt?.slice(0, 19).replace('T', ' ')} · 联网刷新可获取电脑最新内容</p>}
+      {cacheSource && <p className="file-notice">本地缓存 · {cachedAt ? new Date(cachedAt).toLocaleString('zh-CN') : '时间未知'} · 联网刷新可获取电脑最新内容</p>}
       {revoked && <p className="file-notice file-notice--error">授权已撤销，无法刷新和保存到电脑。</p>}
       {mode === 'edit' && conflictPanel}
       <div className="code-document"><CodeEditor
@@ -1100,28 +1160,32 @@ export function FileScreen({
         readOnly={mode === 'read'} fileName={data.path} wrap={wrap}
         initialScrollTop={mode === 'read' ? initialReadTop : undefined}
         scrollRequest={scrollRequest} diagnostics={diagnostics ?? undefined}
-        onDocChange={onEditChange} onSymbolPress={mode === 'read' ? openSymbolDrawer : undefined}
+        onDocChange={onEditChange}
         onSelection={mode === 'read' ? setSnippet : undefined}
         onScrollTop={mode === 'read' ? onReadScroll : undefined}
-        onCursorSymbol={(value) => { cursorSymbolRef.current = value; }}
+        onCursorSymbol={(value) => { cursorSymbolRef.current = value; setCursorSymbol(value); }}
+        onCursorLine={setCursorLine}
         onBlur={() => { if (mode !== 'edit') return; cancelPendingAutosave(); if (editStateRef.current === 'dirty' || editStateRef.current === 'conflict') void flushActiveDraft(); }}
       /></div>
-      {!focusMode && <footer className="code-footer"><button type="button" onClick={() => setDrawer({ type: 'outline' })}><Icon name="outline" size={16} />大纲</button>{isPythonFile && <button type="button" disabled={!online || revoked || saving} onClick={() => openContext()}><Icon name="link" size={16} />关联</button>}<span>{data.encoding.toUpperCase()} · {lineCount} 行</span></footer>}
+      {!focusMode && <footer className="code-footer"><button type="button" onClick={() => setDrawer({ type: 'outline' })}><Icon name="outline" size={16} />大纲</button><button type="button" disabled={!!snippet || !cursorSymbol || saving} title={cursorSymbol ? `导航 ${cursorSymbol.symbol}` : '先轻点函数或变量名'} onClick={() => { if (cursorSymbol) openSymbolDrawer(cursorSymbol.symbol, cursorSymbol.line); }}><Icon name="code" size={16} />代码导航</button>{mode === 'read' && <button type="button" onClick={() => setReadingTools({ line: snippet?.startLine ?? cursorLine, endLine: snippet?.endLine ?? cursorLine })}><Icon name="bookmark" size={16} />书签旁注</button>}{isPythonFile && !snippet && <button type="button" disabled={!online || revoked || saving} onClick={() => openContext()}><Icon name="link" size={16} />关联</button>}<span>{lineCount} 行</span></footer>}
       {focusMode && <button type="button" className="focus-exit" aria-label="退出专注阅读" title="退出专注阅读" onClick={() => setFocusMode(false)}><Icon name="expand" /></button>}
       {message && <p className="file-notice file-notice--error" role="status">{message}</p>}
       {!online && mode === 'edit' && <p className="file-notice">离线：可以继续编辑，草稿保留在本机。</p>}
       {returnPill}{snippetPill}{drawerJsx}{contextJsx}
+      {readingTools && <ReadingTools projectId={projectId} path={data.path} content={data.content} version={data.version} line={readingTools.line} endLine={readingTools.endLine} onJump={jumpToLine} onClose={() => setReadingTools(null)} />}
       {moreVisible && <ActionSheet title={mode === 'read' ? '代码工具' : '草稿工具'} onClose={() => setMoreVisible(false)}>
         <MenuItem icon="outline" onClick={withMenuClosed(() => setDrawer({ type: 'outline' }))}>代码大纲</MenuItem>
         {isPythonFile && <MenuItem icon="link" disabled={!online || revoked || saving} onClick={withMenuClosed(() => openContext())}>{mode === 'edit' ? '关联草稿' : '智能关联'}</MenuItem>}
         {isPythonFile && mode === 'edit' && <MenuItem icon="code" disabled={!online || revoked || saving} onClick={withMenuClosed(() => { const cursor = cursorSymbolRef.current; if (cursor) openContext('definitions', cursor.symbol, cursor.line); else setMessage('请先将光标放在符号旁，再打开代码操作。'); })}>光标处定义与引用</MenuItem>}
         {isPythonFile && <MenuItem icon="shield" disabled={!online || revoked || checking || saving} onClick={withMenuClosed(() => { void runDiagnostics(); })}>{checking ? '检查中…' : '检查语法与诊断'}</MenuItem>}
         <MenuItem icon="share" disabled={sharing} onClick={withMenuClosed(() => { void shareWholeFile(mode === 'edit' ? editTextRef.current : data.content, mode === 'edit' ? 'draft' : currentSource); })}>{mode === 'edit' ? '分享草稿' : '分享文件'}</MenuItem>
+        {mode === 'read' && <MenuItem icon="copy" disabled={!snippet} onClick={withMenuClosed(() => { if (snippet) void copyText(snippet.text).then((result) => setMessage(result.ok ? '已复制选中代码' : result.message ?? '复制失败')); })}>复制选中代码</MenuItem>}
         {mode === 'read' && <MenuItem icon="refresh" aria-label="刷新" disabled={!online || revoked || saving} onClick={withMenuClosed(() => { void reloadFromPc(); })}>刷新电脑版本</MenuItem>}
         <MenuItem icon="outline" onClick={toggleImmersiveWrap}>{wrap ? '自动折行：开' : '自动折行：关'}</MenuItem>
         <MenuItem icon="expand" onClick={withMenuClosed(() => { setImmersive(true); setFocusMode(true); })}>专注阅读</MenuItem>
         <MenuItem icon="system" onClick={withMenuClosed(() => setImmersive(!immersive))}>{immersive ? '显示连接状态栏' : '隐藏连接状态栏'}</MenuItem>
         {mode === 'edit' && <>
+          <MenuItem icon="file" disabled={!online || revoked || saving || switchBusy} onClick={withMenuClosed(() => { void saveAs(); })}>另存为新文件</MenuItem>
           <MenuItem icon="plus" disabled={switchBusy || saving} onClick={withMenuClosed(() => { void createDraft(); })}>新建命名草稿</MenuItem>
           <MenuItem icon="edit" disabled={!activeDraftId || switchBusy || saving} onClick={withMenuClosed(() => { void renameActiveDraft(); })}>重命名草稿</MenuItem>
           <MenuItem icon="trash" danger disabled={!drafts.length || switchBusy || saving} onClick={withMenuClosed(() => { void deleteActiveDraft(); })}>删除当前草稿</MenuItem>

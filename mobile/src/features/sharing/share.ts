@@ -5,6 +5,7 @@
  */
 
 import { Capacitor } from '@capacitor/core';
+import { PocketCodeBridge } from '../../native';
 
 export interface ShareOutcome {
   ok: boolean;
@@ -12,6 +13,8 @@ export interface ShareOutcome {
   message?: string;
   /** 走了剪贴板兜底时为 true（Android 分享面板不可用的环境）。 */
   copied?: boolean;
+  cancelled?: boolean;
+  downloaded?: boolean;
 }
 
 export async function shareText(title: string, text: string): Promise<ShareOutcome> {
@@ -59,5 +62,36 @@ export async function copyText(text: string): Promise<ShareOutcome> {
     return { ok: true, copied: true };
   } catch {
     return { ok: false, message: '复制失败：当前环境不允许访问剪贴板' };
+  }
+}
+
+/** 文件分享不能回退成复制文本；Android 使用私有缓存和 FileProvider。 */
+export async function shareArchive(name: string, bytes: Uint8Array): Promise<ShareOutcome> {
+  try {
+    if (bytes.byteLength > 16 * 1024 * 1024) return { ok: false, message: 'ZIP 超过 16 MiB 分享上限' };
+    if (Capacitor.isNativePlatform()) {
+      const parts: string[] = [];
+      for (let i = 0; i < bytes.length; i += 0x8000) parts.push(String.fromCharCode(...bytes.subarray(i, i + 0x8000)));
+      const { uri } = await PocketCodeBridge.writeShareArchive({ name, base64: btoa(parts.join('')) });
+      const { Share } = await import('@capacitor/share');
+      await Share.share({ title: name, files: [uri], dialogTitle: '分享 ZIP 压缩包' });
+      return { ok: true };
+    }
+    const file = new File([new Uint8Array(bytes).buffer], name, { type: 'application/zip' });
+    if (typeof navigator !== 'undefined' && navigator.canShare?.({ files: [file] }) && navigator.share) {
+      try {
+        await navigator.share({ files: [file], title: name });
+        return { ok: true };
+      } catch (error) { if (isUserCancel(error)) throw error; }
+    }
+    const url = URL.createObjectURL(file);
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = name;
+    document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return { ok: true, downloaded: true };
+  } catch (error) {
+    if (isUserCancel(error)) return { ok: true, cancelled: true };
+    return { ok: false, message: error instanceof Error ? error.message : 'ZIP 分享失败，请重试' };
   }
 }

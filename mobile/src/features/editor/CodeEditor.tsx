@@ -66,12 +66,11 @@ interface Props {
   diagnostics?: Diagnostic[];
   /** 只读模式选区变化回调（S4f 片段分享）：有非空选区时上抛，清空传 null。 */
   onSelection?: (selection: { text: string; startLine: number; endLine: number } | null) => void;
-  /** 只读模式长按符号回调（Android WebView 长按触发 contextmenu）。 */
-  onSymbolPress?: (symbol: string, line: number) => void;
   /** 编辑模式内容变化回调。 */
   onDocChange?: (value: string) => void;
   /** 仅报告光标符号；不会因移动光标而跳转或请求网络。 */
   onCursorSymbol?: (value: { symbol: string; line: number } | null) => void;
+  onCursorLine?: (line: number) => void;
   /** 内部 scroller 滚动回调（阅读位置记录）。 */
   onScrollTop?: (scrollTop: number) => void;
   /** 失焦回调（编辑模式落草稿的安全网）。 */
@@ -112,10 +111,10 @@ export function CodeEditor({
   initialScrollTop,
   scrollRequest,
   diagnostics,
-  onSymbolPress,
   onSelection,
   onDocChange,
   onCursorSymbol,
+  onCursorLine,
   onScrollTop,
   onBlur,
   className,
@@ -132,14 +131,14 @@ export function CodeEditor({
   changeRef.current = onDocChange;
   const cursorRef = useRef(onCursorSymbol);
   cursorRef.current = onCursorSymbol;
+  const cursorLineRef = useRef(onCursorLine);
+  cursorLineRef.current = onCursorLine;
   const scrollRef = useRef(onScrollTop);
   scrollRef.current = onScrollTop;
   const blurRef = useRef(onBlur);
   blurRef.current = onBlur;
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
-  const onSymbolPressRef = useRef(onSymbolPress);
-  onSymbolPressRef.current = onSymbolPress;
   const onSelectionRef = useRef(onSelection);
   onSelectionRef.current = onSelection;
 
@@ -172,18 +171,19 @@ export function CodeEditor({
             if (update.docChanged && !update.transactions.some((tr) => tr.annotation(externalDocSync))) {
               changeRef.current?.(update.state.doc.toString());
             }
-            if (!readOnlyRef.current && cursorRef.current) {
+            if (update.selectionSet || update.docChanged) {
               const position = update.state.selection.main.head;
               const line = update.state.doc.lineAt(position);
               const symbol = identifierAt(line.text, position - line.from);
-              cursorRef.current(symbol ? { symbol, line: line.number } : null);
+              cursorRef.current?.(update.state.selection.main.empty && symbol ? { symbol, line: line.number } : null);
+              cursorLineRef.current?.(line.number);
             }
             // 只读模式的选区上抛（片段分享）；编辑模式不触发
             if (onSelectionRef.current && readOnlyRef.current) {
               const range = update.state.selection.main;
               if (!range.empty) {
                 const startLine = update.state.doc.lineAt(range.from).number;
-                const endLine = update.state.doc.lineAt(range.to).number;
+                const endLine = update.state.doc.lineAt(Math.max(range.from, range.to - 1)).number;
                 onSelectionRef.current({
                   text: update.state.sliceDoc(range.from, range.to),
                   startLine,
@@ -358,22 +358,21 @@ export function CodeEditor({
     });
   }, [diagnostics]);
 
-  // ---- 只读模式长按取词：Android 长按触发 contextmenu，取词后交给上层 ----
+  // 只读轻点只记录位置；长按和 contextmenu 完全交给系统选择、复制。
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-    const handler = (event: MouseEvent) => {
-      if (!readOnlyRef.current || !onSymbolPressRef.current) return;
+    const handler = (event: PointerEvent) => {
+      if (!readOnlyRef.current || !view.state.selection.main.empty || window.getSelection()?.toString()) return;
       const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
       if (pos == null) return;
       const line = view.state.doc.lineAt(pos);
       const symbol = identifierAt(line.text, pos - line.from);
-      if (!symbol) return;
-      event.preventDefault();
-      onSymbolPressRef.current(symbol, line.number);
+      cursorRef.current?.(symbol ? { symbol, line: line.number } : null);
+      cursorLineRef.current?.(line.number);
     };
-    view.dom.addEventListener('contextmenu', handler);
-    return () => view.dom.removeEventListener('contextmenu', handler);
+    view.dom.addEventListener('pointerup', handler);
+    return () => view.dom.removeEventListener('pointerup', handler);
   }, []);
 
   return <div ref={hostRef} className={`cmhost ${className ?? ''}`} />;

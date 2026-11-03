@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Iterator
 
 from pathlib import Path
@@ -23,6 +23,8 @@ from pocketcode.server.schemas import (
     FileCreateResponse,
     FileSaveRequest,
     FileSaveResponse,
+    FileMoveRequest,
+    FileMoveResponse,
     RestoreResponse,
     TrashEntry,
     TrashListResponse,
@@ -31,7 +33,7 @@ from pocketcode.server.schemas import (
 )
 from pocketcode.services.files import FileServiceError, project_root_or_404
 from pocketcode.services.trash import TrashServiceError, TrashStore
-from pocketcode.services.writes import WriteServiceError, create_entry, save_file
+from pocketcode.services.writes import WriteServiceError, create_entry, save_file, move_file
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_device)])
 
@@ -129,14 +131,15 @@ def post_files(project_id: str, request: Request, body: FileCreateRequest) -> Fi
         raise ApiError(exc.code, exc.message) from exc
 
     try:
-        fields = create_entry(
-            root,
-            body.path,
-            body.type,
-            content=body.content,
-            encoding=body.encoding,
-            newline=body.newline,
-        )
+        with _path_lock(f"{project_id}:{body.path.lower()}"):
+            fields = create_entry(
+                root,
+                body.path,
+                body.type,
+                content=body.content,
+                encoding=body.encoding,
+                newline=body.newline,
+            )
     except (WriteServiceError, PathGuardError) as exc:
         _translate_service_error(exc)
     return FileCreateResponse(
@@ -145,6 +148,21 @@ def post_files(project_id: str, request: Request, body: FileCreateRequest) -> Fi
         version=fields.get("version"),
         manifest_revision=_bump_revision(request, project_id),
     )
+
+
+@router.post("/projects/{project_id}/files/move", response_model=FileMoveResponse, summary="重命名或移动文件")
+def post_move_file(project_id: str, request: Request, body: FileMoveRequest) -> FileMoveResponse:
+    try:
+        root = project_root_or_404(request.app.state.store, project_id)
+        validate_relative_path(body.path)
+        validate_relative_path(body.target_path)
+        with ExitStack() as locks:
+            for path in sorted({body.path.lower(), body.target_path.lower()}):
+                locks.enter_context(_path_lock(f"{project_id}:{path}"))
+            fields = move_file(root, body.path, body.target_path, body.base_version)
+        return FileMoveResponse(**fields, manifest_revision=_bump_revision(request, project_id))
+    except (WriteServiceError, FileServiceError, PathGuardError) as exc:
+        _translate_service_error(exc)
 
 
 @router.post(

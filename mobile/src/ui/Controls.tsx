@@ -24,7 +24,7 @@ export function ActionSheet({ title, onClose, children }: { title: string; onClo
   return <><div className="sheet-overlay" onClick={onClose} /><div ref={ref} className="sheet action-sheet" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onKeyDown={(event) => {
     if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
     if (event.key !== 'Tab') return;
-    const elements = ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, select, [tabindex="0"]');
+    const elements = ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]');
     if (!elements?.length) { event.preventDefault(); return; }
     const first = elements[0], last = elements[elements.length - 1];
     if (event.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) { event.preventDefault(); last.focus(); }

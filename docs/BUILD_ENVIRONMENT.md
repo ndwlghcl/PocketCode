@@ -50,6 +50,7 @@ jsonschema（MIT）、PyYAML（MIT）。
 | vite | 6.x | MIT | 构建工具 |
 | vitest | 2.x | MIT | 单元测试 |
 | typescript | 5.6.x | Apache-2.0 | 类型检查 |
+| fflate | 0.8.3 | MIT | 多文件 ZIP 压缩，异步打包并保留相对路径 |
 
 后续阶段将引入：CodeMirror 6（MIT，S2）、@capacitor/share 等 Capacitor 插件（MIT，S3/S4）。
 

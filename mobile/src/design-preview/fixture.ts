@@ -2,6 +2,7 @@
 import { saveCachedProjects, saveCachedManifest, saveCachedFile } from '../storage/cacheStore';
 import { savePairing } from '../storage/pairingStore';
 import { upsertDraft } from '../storage/draftStore';
+import { rememberFile } from '../storage/readingStore';
 import type { ManifestNode, FileContentResponse } from '../api/types';
 
 if (!import.meta.env.DEV || location.hostname !== '127.0.0.1' || location.port !== '5175') {
@@ -42,4 +43,6 @@ for (const project of projects) {
   await saveCachedFile(project.id, data);
 }
 await upsertDraft('ui-nightfall', path, { id: 'ui-sample-draft', name: '服务路由整理', path, projectId: 'ui-nightfall', content: content + '\n# 一个新的想法\n', baseVersion: version, savedAt: mtime });
+await upsertDraft('ui-nightfall', path, { id: 'ui-sample-draft-2', name: '错误处理实验', path, projectId: 'ui-nightfall', content: content.replace('return app', 'return app  # 先记录另一种思路'), baseVersion: version, savedAt: mtime });
+await rememberFile(projects[0], path);
 location.replace('/');

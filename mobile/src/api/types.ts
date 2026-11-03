@@ -137,6 +137,9 @@ export interface TrashRequest {
   paths: RelativePath[];
 }
 
+export interface FileMoveRequest { path: RelativePath; target_path: RelativePath; base_version: Sha256Version }
+export interface FileMoveResponse { path: RelativePath; target_path: RelativePath; version: Sha256Version; manifest_revision: number }
+
 export interface TrashItem {
   path: RelativePath;
   trash_id: string;

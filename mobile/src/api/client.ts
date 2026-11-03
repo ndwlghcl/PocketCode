@@ -8,6 +8,8 @@ import type {
   FileContentResponse,
   FileCreateRequest,
   FileCreateResponse,
+  FileMoveRequest,
+  FileMoveResponse,
   FileSaveRequest,
   FileSaveResponse,
   DiagnoseRequest,
@@ -111,6 +113,10 @@ export class PocketCodeClient {
 
   async trashEntries(projectId: string, body: TrashRequest): Promise<TrashResponse> {
     return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/trash`, body);
+  }
+
+  async moveFile(projectId: string, body: FileMoveRequest): Promise<FileMoveResponse> {
+    return this.request('POST', `/v1/projects/${encodeURIComponent(projectId)}/files/move`, body);
   }
 
   async listTrash(): Promise<TrashListResponse> {

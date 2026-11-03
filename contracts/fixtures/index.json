@@ -1,6 +1,8 @@
 {
   "description": "合同 fixtures 索引：每个条目把一个 JSON 示例绑定到 openapi.yaml 中的 Schema。由 integration-tests/contract/check_contracts.py 机器校验。",
   "entries": [
+    { "id": "file_move_request", "file": "file_move_request.json", "schema": "#/components/schemas/FileMoveRequest", "kind": "request" },
+    { "id": "file_move_ok", "file": "file_move_ok.json", "schema": "#/components/schemas/FileMoveResponse", "kind": "response" },
     { "id": "python_context_request", "file": "python_context_request.json", "schema": "#/components/schemas/PythonContextRequest", "kind": "request" },
     { "id": "python_context_ok", "file": "python_context_ok.json", "schema": "#/components/schemas/PythonContextResponse", "kind": "response" },
     { "id": "health_ok", "file": "health_ok.json", "schema": "#/components/schemas/HealthResponse", "kind": "response" },

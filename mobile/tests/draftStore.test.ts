@@ -88,11 +88,13 @@ describe('draftStore（草稿箱，原生磁盘 KV）', () => {
     expect((await loadDrafts('p1', 'b.py', storage)).drafts).toHaveLength(0);
   });
 
-  it('损坏数据按无草稿处理', async () => {
+  it('损坏数据明确报错，更新不得覆盖原始内容', async () => {
     await storage.set('pc.draft.p1.a.py', '{broken');
-    expect((await loadDrafts('p1', 'a.py', storage)).drafts).toHaveLength(0);
+    await expect(loadDrafts('p1', 'a.py', storage)).rejects.toThrow('原数据未改动');
+    await expect(upsertDraft('p1', 'a.py', draft('new', 'new'), storage)).rejects.toThrow();
+    expect(await storage.get('pc.draft.p1.a.py')).toBe('{broken');
     await storage.set('pc.draft.p1.a.py', '{"drafts": [{"id": "x"}]}');
-    expect((await loadDrafts('p1', 'a.py', storage)).drafts).toHaveLength(0);
+    await expect(loadDrafts('p1', 'a.py', storage)).rejects.toThrow('格式损坏');
   });
 
   it('clearDrafts 清空（保存成功后调用）', async () => {
@@ -150,5 +152,62 @@ describe('draftStore（草稿箱，原生磁盘 KV）', () => {
     expect(await clearAllDrafts(storage)).toBe(2);
     expect(await listAllDrafts(storage)).toHaveLength(0);
     expect((await loadDrafts('p1', 'a.py', storage)).drafts).toHaveLength(0);
+  });
+
+  it('一次读取异常后不写回空列表；恢复后可继续写入并保留旧草稿', async () => {
+    const old = draft('old', 'KEEP');
+    await upsertDraft('p1', 'a.py', old, storage);
+    const originalGet = storage.get;
+    storage.get = async () => { throw new Error('temporary read error'); };
+    await expect(upsertDraft('p1', 'a.py', draft('new', 'NEW'), storage)).rejects.toThrow('无法读取');
+    storage.get = originalGet;
+    expect((await loadDrafts('p1', 'a.py', storage)).drafts).toEqual([expect.objectContaining({ id: old.id, content: 'KEEP' })]);
+    await upsertDraft('p1', 'a.py', draft('new', 'NEW'), storage);
+    expect((await loadDrafts('p1', 'a.py', storage)).drafts).toHaveLength(2);
+  });
+
+  it('跨页面并发读改写不会丢失多份草稿，失败后队列仍可继续', async () => {
+    const a = draft('A', 'A'), b = draft('B', 'B');
+    await Promise.all([upsertDraft('p1', 'a.py', a, storage), upsertDraft('p1', 'a.py', b, storage)]);
+    expect((await loadDrafts('p1', 'a.py', storage)).drafts).toHaveLength(2);
+    await Promise.all([renameDraft('p1', 'a.py', a.id, 'RENAMED', storage), removeDraft('p1', 'a.py', b.id, storage)]);
+    expect((await loadDrafts('p1', 'a.py', storage)).drafts.map((d) => d.name)).toEqual(['RENAMED']);
+  });
+
+  it('清空与在途写入按调用顺序执行，枚举失败不冒充空列表', async () => {
+    const pending = upsertDraft('p1', 'a.py', draft('A', 'A'), storage);
+    const clear = clearAllDrafts(storage);
+    await pending; await clear;
+    expect(await listAllDrafts(storage)).toEqual([]);
+    storage.keys = async () => { throw new Error('read error'); };
+    await expect(listAllDrafts(storage)).rejects.toThrow('无法读取草稿箱');
+    await expect(clearAllDrafts(storage)).rejects.toThrow('read error');
+  });
+
+  it('旧草稿兼容且新记录的编码换行信息在更新后保留', async () => {
+    const a = { ...draft('A', 'A'), encoding: 'utf-8-bom' as const, newline: 'CRLF' as const };
+    await upsertDraft('p1', 'a.py', a, storage);
+    const { encoding: _encoding, newline: _newline, ...withoutMetadata } = { ...a, content: 'B' };
+    await upsertDraft('p1', 'a.py', withoutMetadata, storage);
+    expect((await loadDrafts('p1', 'a.py', storage)).drafts[0]).toMatchObject({ content: 'B', encoding: 'utf-8-bom', newline: 'CRLF' });
+  });
+
+  it('草稿箱可报告损坏文件，同时展示其他可读草稿；损坏原文不变', async () => {
+    await upsertDraft('p1', 'good.py', draft('good', 'KEEP'), storage);
+    await storage.set('pc.draft.p1.bad.py', '{broken');
+    const errors: string[] = [];
+    const items = await listAllDrafts(storage, (message) => errors.push(message));
+    expect(items).toHaveLength(1);
+    expect(items[0].draft.content).toBe('KEEP');
+    expect(errors[0]).toContain('bad.py');
+    expect(await storage.get('pc.draft.p1.bad.py')).toBe('{broken');
+  });
+
+  it('同一记录部分损坏时，不通过过滤无效项来覆盖剩余原文', async () => {
+    const raw = JSON.stringify({ activeId: 'bad', drafts: [draft('valid', 'KEEP'), { id: 'bad', content: 'RECOVER ME' }] });
+    await storage.set('pc.draft.p1.a.py', raw);
+    await expect(upsertDraft('p1', 'a.py', draft('new', 'NEW'), storage)).rejects.toThrow();
+    await expect(removeDraft('p1', 'a.py', 'bad', storage)).rejects.toThrow();
+    expect(await storage.get('pc.draft.p1.a.py')).toBe(raw);
   });
 });

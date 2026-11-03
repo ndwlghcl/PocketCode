@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { FileContentResponse, ProjectSummary } from '../../api/types';
+import type { ProjectSummary } from '../../api/types';
 import { PocketCodeClient } from '../../api/client';
 import {
   clearAllDrafts,
@@ -8,26 +8,25 @@ import {
   removeDraft,
   setActiveDraft,
   type DraftListItem,
+  type FileDraft,
+  restoreDraftBackup,
+  type DraftBackup,
 } from '../../storage/draftStore';
 import {
-  loadCachedFile,
   loadCachedProjects,
-  saveCachedFile,
   saveCachedProjects,
 } from '../../storage/cacheStore';
 import { CodeEditor } from '../editor/CodeEditor';
 import { Icon } from '../../ui/Icon';
 import { ActionSheet, IconButton, MenuItem } from '../../ui/Controls';
+import { shareText, shareArchive } from '../sharing/share';
+import { buildDraftBackup, parseDraftBackup } from './draftBackup';
+import { ConflictDiff } from '../explorer/ConflictDiff';
 
 interface Props {
   client: PocketCodeClient | null;
   online: boolean;
-  /** 用户点「去编辑」并成功取到文件内容后，由根布局负责路由。 */
-  onOpenDraft: (
-    project: ProjectSummary,
-    data: FileContentResponse,
-    meta?: { fromCache?: boolean; cachedAt?: string },
-  ) => void;
+  onOpenDraft: (draft: FileDraft) => void;
 }
 
 /**
@@ -44,10 +43,39 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
   const [busy, setBusy] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const backupInput = useRef<HTMLInputElement>(null);
+  const [pendingBackup, setPendingBackup] = useState<DraftBackup | null>(null);
+  const [compare, setCompare] = useState<{ first: FileDraft; second: FileDraft } | null>(null);
+  const [compareFirst, setCompareFirst] = useState<FileDraft | null>(null);
+
+  const backupAll = async () => {
+    if (busy) return; setBusy(true); setError(null); setNotice(null);
+    try {
+      const backup = await buildDraftBackup();
+      const result = await shareArchive(backup.name, backup.bytes);
+      if (!result.ok) throw new Error(result.message ?? '备份导出失败');
+      if (!result.cancelled) setNotice(result.downloaded ? `已下载 ${backup.count} 份草稿的备份` : '已打开备份分享面板，请选择保存位置并确认保存');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '备份失败，草稿保留'); }
+    finally { setBusy(false); }
+  };
+  const chooseBackup = async (file: File) => {
+    if (busy) return; setBusy(true); setError(null); setNotice(null);
+    try {
+      if (file.size > 16 * 1024 * 1024) throw new Error('备份文件超过 16 MiB 上限');
+      setPendingBackup(parseDraftBackup(new Uint8Array(await file.arrayBuffer())));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '备份读取失败'); }
+    finally { setBusy(false); }
+  };
+  const restoreAll = async () => {
+    if (!pendingBackup || busy) return; setBusy(true); setError(null);
+    try { const result = await restoreDraftBackup(pendingBackup); setPendingBackup(null); await reload(); setNotice(`已恢复 ${result.restored} 份草稿，跳过 ${result.skipped} 份相同内容；原有版本保留。`); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : '恢复失败，原草稿保留'); }
+    finally { setBusy(false); }
+  };
 
   const loadProjects = useCallback(async (): Promise<ProjectSummary[]> => {
     try {
-      if (client) {
+      if (client && online) {
         const response = await client.listProjects();
         await saveCachedProjects(response.projects);
         return response.projects;
@@ -57,61 +85,44 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
     }
     const cached = await loadCachedProjects();
     return cached?.projects ?? [];
-  }, [client]);
+  }, [client, online]);
 
   const reload = useCallback(async () => {
     setBusy(true);
     try {
-      const [allDrafts, projects] = await Promise.all([listAllDrafts(), loadProjects()]);
+      const errors: string[] = [];
+      const allDrafts = await listAllDrafts(undefined, (message) => errors.push(message));
       setItems(allDrafts);
-      const names: Record<string, string> = {};
-      for (const project of projects) names[project.id] = project.name;
-      setProjectNames(names);
-      setError(null);
+      setError(errors.length ? `${errors.length} 个文件的草稿无法读取，以下仅显示可读取部分。${errors.slice(0, 3).join(' ')}` : null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法读取草稿箱，请重试');
     } finally {
       setBusy(false);
     }
-  }, [loadProjects]);
+  }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
+  // 项目名称只是展示信息，电脑请求慢或失败都不能阻塞本地草稿列表。
+  useEffect(() => {
+    let cancelled = false;
+    void loadProjects().then((projects) => {
+      if (!cancelled) setProjectNames(Object.fromEntries(projects.map((project) => [project.id, project.name])));
+    });
+    return () => { cancelled = true; };
+  }, [loadProjects]);
+
   const openDraft = async (item: DraftListItem) => {
-    if (!client) return;
     setError(null);
     setBusy(true);
     try {
-      // 打开后 FileScreen 会按 activeId 恢复这份草稿
-      await setActiveDraft(item.projectId, item.path, item.draft.id);
-      const projects = await loadProjects();
-      const project = projects.find((entry) => entry.id === item.projectId);
-      if (!project) {
-        setError('找不到草稿所属的项目（可能已被电脑端移除授权）');
-        return;
-      }
-      let data: FileContentResponse | null = null;
-      let meta: { fromCache?: boolean; cachedAt?: string } | undefined;
-      if (online) {
-        try {
-          data = await client.readFile(item.projectId, item.path);
-          void saveCachedFile(item.projectId, data);
-        } catch {
-          data = null;
-        }
-      }
-      if (!data) {
-        const cached = await loadCachedFile(item.projectId, item.path);
-        if (cached) {
-          data = cached.data;
-          meta = { fromCache: true, cachedAt: cached.fetchedAt };
-        }
-      }
-      if (!data) {
-        setError('无法加载文件内容：当前离线，且该文件没有本地缓存。');
-        return;
-      }
-      onOpenDraft(project, data, meta);
+      const stored = await setActiveDraft(item.projectId, item.path, item.draft.id);
+      const fresh = stored.drafts.find((draft) => draft.id === item.draft.id)!;
+      onOpenDraft({ ...fresh, projectName: fresh.projectName ?? projectNames[item.projectId] });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '草稿读取失败，未打开');
     } finally {
       setBusy(false);
     }
@@ -126,10 +137,13 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
       return;
     }
     setBusy(true);
+    setNotice(null); setError(null);
     try {
       await removeDraft(item.projectId, item.path, item.draft.id);
       await reload();
       setNotice('草稿已删除');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '删除失败');
     } finally {
       setBusy(false);
     }
@@ -140,10 +154,13 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
       return;
     }
     setBusy(true);
+    setNotice(null); setError(null);
     try {
       await clearAllDrafts();
       await reload();
       setNotice('草稿箱已清空');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '清理未全部完成，请刷新检查');
     } finally {
       setBusy(false);
     }
@@ -162,6 +179,9 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
     <section>
       <header className="page-intro page-heading-row"><div><p className="eyebrow">想法，先留在这里</p><h1>草稿箱<span>.</span></h1></div><IconButton icon="more" label="草稿箱操作" onClick={() => setToolsOpen(true)} /></header>
       <p className="project-assurance"><Icon name="shield" size={16} />保存在这台设备，离线也能翻阅。</p>
+      <input ref={backupInput} className="visually-hidden" type="file" accept=".zip,.json,application/zip,application/json" aria-label="选择草稿备份" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void chooseBackup(file); }} />
+      {busy && <p className="hint" role="status">正在处理草稿，请稍候…</p>}
+      {compareFirst && <p className="hint">已选「{compareFirst.name}」，请在同一文件的另一份草稿上点击“与所选版本比较”。<button type="button" className="draftcard__action" onClick={() => setCompareFirst(null)}>取消选择</button></p>}
       {notice ? (
         <div className="result result--ok">
           <p className="result__title">✔ {notice}</p>
@@ -173,8 +193,8 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
         </div>
       ) : null}
       {items === null ? (
-        <p className="hint">正在读取草稿…</p>
-      ) : items.length === 0 ? (
+        <p className="hint">{error ? '草稿未能完整读取，请在菜单中重试刷新；原数据保留。' : '正在读取草稿…'}</p>
+      ) : items.length === 0 && error ? <p className="hint">未能读取草稿，请重试刷新。原数据保留。</p> : items.length === 0 ? (
         <div className="empty"><Icon name="drafts" size={30} /><p>留一点空间给新想法。</p><span>编辑文件时，草稿会在这里等你。</span></div>
       ) : (
         <p className="hint">共 {items.length} 份草稿</p>
@@ -197,7 +217,7 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
                 </div>
                 <p className="cardlist__meta">
                   {item.path.split('/').pop()} ·{' '}
-                  {projectNames[item.projectId] ?? '未知项目'} ·{' '}
+                  {item.draft.projectName ?? projectNames[item.projectId] ?? '来源项目不可用'} ·{' '}
                   {item.draft.savedAt.slice(0, 19).replace('T', ' ')}
                 </p>
                 <p className="cardlist__meta draftcard__path">{item.path}</p>
@@ -219,15 +239,20 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
                       >
                         复制全文
                       </button>
+                      <button type="button" className="draftcard__action" onClick={() => { void shareText(`草稿 · ${item.draft.name}`, item.draft.content).then((result) => { if (!result.ok) setError(result.message ?? '导出失败'); }); }}>导出草稿</button>
                     </div>
                   </>
                 ) : null}
                 <div className="draftcard__row">
+                  <button type="button" className="draftcard__action" disabled={busy} onClick={() => {
+                    if (compareFirst && compareFirst.id !== item.draft.id && compareFirst.projectId === item.projectId && compareFirst.path === item.path) { setCompare({ first: compareFirst, second: item.draft }); setCompareFirst(null); }
+                    else setCompareFirst(item.draft);
+                  }}>{compareFirst && compareFirst.id !== item.draft.id && compareFirst.projectId === item.projectId && compareFirst.path === item.path ? '与所选版本比较' : '选择作比较'}</button>
                   <button
                     type="button"
                     className="draftcard__action draftcard__action--primary"
                     onClick={() => void openDraft(item)}
-                    disabled={busy || !client}
+                    disabled={busy}
                   >
                     去编辑
                   </button>
@@ -245,7 +270,9 @@ export function DraftsScreen({ client, online, onOpenDraft }: Props) {
           );
         })}
       </ul>
-      {toolsOpen && <ActionSheet title="草稿箱操作" onClose={() => setToolsOpen(false)}><MenuItem icon="refresh" disabled={busy} onClick={() => { setToolsOpen(false); void reload(); }}>刷新草稿</MenuItem><MenuItem icon="trash" danger disabled={busy || !items?.length} onClick={() => { setToolsOpen(false); void clearEverything(); }}>清空全部草稿</MenuItem></ActionSheet>}
+      {compare && <ConflictDiff computer={compare.first.content} draft={compare.second.content} title="草稿版本对比" beforeLabel={compare.first.name} afterLabel={compare.second.name} onClose={() => setCompare(null)} />}
+      {pendingBackup && <ActionSheet title="恢复草稿备份" onClose={() => { if (!busy) setPendingBackup(null); }}><p>备份时间：{new Date(pendingBackup.createdAt).toLocaleString('zh-CN')}</p><p>共 {pendingBackup.drafts.length} 份草稿，来自 {new Set(pendingBackup.drafts.map((d) => `${d.projectId}:${d.path}`)).size} 个文件。</p><p className="hint">恢复只追加版本，同名草稿会保留；完全相同的版本跳过。不会写入电脑文件。</p><button type="button" className="btn btn--primary" disabled={busy} onClick={() => void restoreAll()}>确认恢复</button></ActionSheet>}
+      {toolsOpen && <ActionSheet title="草稿箱操作" onClose={() => setToolsOpen(false)}><MenuItem icon="download" disabled={busy} onClick={() => { setToolsOpen(false); void backupAll(); }}>备份全部草稿</MenuItem><MenuItem icon="drafts" disabled={busy} onClick={() => { setToolsOpen(false); backupInput.current?.click(); }}>从备份恢复</MenuItem><MenuItem icon="refresh" disabled={busy} onClick={() => { setToolsOpen(false); void reload(); }}>刷新草稿</MenuItem><MenuItem icon="trash" danger disabled={busy || !items?.length} onClick={() => { setToolsOpen(false); void clearEverything(); }}>清空全部草稿</MenuItem></ActionSheet>}
     </section>
   );
 }

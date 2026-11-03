@@ -147,7 +147,10 @@ def create_entry(
         )
 
     if entry_type == "dir":
-        target.mkdir(parents=True, exist_ok=False)
+        try:
+            target.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            raise WriteServiceError("ALREADY_EXISTS", "目标已存在，未做任何覆盖") from exc
         return {"path": relative_path, "type": "dir"}
 
     new_bytes = _encode(_apply_newline(content, newline), encoding)
@@ -159,8 +162,18 @@ def create_entry(
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f".pocketcode-tmp-{uuid.uuid4().hex[:12]}")
     try:
-        tmp.write_bytes(new_bytes)
-        os.replace(tmp, target)
+        with tmp.open("xb") as handle:
+            handle.write(new_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if resolve_under_root(root, relative_path) != target:
+            raise WriteServiceError("PATH_FORBIDDEN", "新建期间目标位置发生变化")
+        # 同目录硬链接发布完整内容；目标存在时由文件系统原子拒绝。
+        # 不可回退到 os.replace：外部 IDE 不遵守服务内部的锁。
+        try:
+            os.link(tmp, target)
+        except FileExistsError as exc:
+            raise WriteServiceError("ALREADY_EXISTS", "目标已存在，未做任何覆盖", {"occupied_path": relative_path}) from exc
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
@@ -179,3 +192,83 @@ def hashlib_sha256(data: bytes) -> str:
     import hashlib
 
     return hashlib.sha256(data).hexdigest()
+
+
+def _rename_exclusive(source: Path, target: Path) -> None:
+    """原子移动且不覆盖；不支持的平台宁可失败，也不回退到 replace。"""
+    if os.name == "nt":
+        # Windows rename 的目标已存在时会失败，包含外部程序的竞态。
+        os.rename(source, target)
+        return
+    import ctypes
+    import errno
+    import sys
+
+    if sys.platform != "linux":
+        raise WriteServiceError("IO_ERROR", "当前系统不支持安全的不覆盖移动")
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renameat2", None)
+    if rename is None:
+        raise WriteServiceError("IO_ERROR", "当前文件系统不支持安全的不覆盖移动")
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1) != 0:
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise FileExistsError(code, os.strerror(code), str(target))
+        raise OSError(code, os.strerror(code))
+
+
+def _unlinked_path(root: Path, relative_path: str) -> Path:
+    import stat
+
+    if any(char in relative_path for char in ':*?"<>|'):
+        raise WriteServiceError("PATH_INVALID", "移动路径不能包含 Windows 非法字符或数据流名称")
+    resolved = resolve_under_root(root, relative_path)
+    current = root.resolve(strict=True)
+    for part in relative_path.split("/"):
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise WriteServiceError("PATH_FORBIDDEN", "移动路径不能经过符号链接或重解析点")
+    return resolved
+
+
+def move_file(root: Path, path: str, target_path: str, base_version: str) -> dict:
+    """正文不重写；来源版本检查 + 目标不覆盖，现有草稿由手机单独保留。"""
+    source = _unlinked_path(root, path)
+    target = _unlinked_path(root, target_path)
+    if source == target:
+        raise WriteServiceError("ALREADY_EXISTS", "目标与来源相同；请使用不同的新路径")
+    if not source.is_file():
+        raise WriteServiceError("FILE_NOT_FOUND", "来源普通文件不存在")
+    if target.exists():
+        raise WriteServiceError("ALREADY_EXISTS", "目标已存在，未覆盖")
+    if not target.parent.is_dir():
+        raise WriteServiceError("FILE_NOT_FOUND", "目标文件夹不存在，请先创建文件夹")
+    if source.stat().st_size > MAX_FILE_BYTES:
+        raise WriteServiceError("FILE_TOO_LARGE", "移动文件超过 4 MiB 上限")
+    with source.open("rb") as handle:
+        content = handle.read(MAX_FILE_BYTES + 1)
+    if len(content) > MAX_FILE_BYTES:
+        raise WriteServiceError("FILE_TOO_LARGE", "移动文件超过 4 MiB 上限")
+    version = "sha256:" + hashlib_sha256(content)
+    if version != base_version:
+        raise WriteServiceError("VERSION_CONFLICT", "来源文件已修改，请刷新目录后重试", {"current_version": version})
+    # 再次检查路径；外部程序不遵守服务锁，版本检查仍是乐观并发控制。
+    if _unlinked_path(root, path) != source or _unlinked_path(root, target_path) != target:
+        raise WriteServiceError("PATH_FORBIDDEN", "移动期间文件位置发生变化")
+    try:
+        _rename_exclusive(source, target)
+    except FileExistsError as exc:
+        raise WriteServiceError("ALREADY_EXISTS", "目标已存在，未覆盖") from exc
+    except OSError as exc:
+        if target.exists():
+            raise WriteServiceError("ALREADY_EXISTS", "目标已存在，未覆盖") from exc
+        if not source.exists():
+            raise WriteServiceError("FILE_NOT_FOUND", "移动期间来源文件已不存在") from exc
+        raise WriteServiceError("IO_ERROR", "移动失败，请检查文件占用、权限或文件系统支持") from exc
+    return {"path": path, "target_path": target_path, "version": version}

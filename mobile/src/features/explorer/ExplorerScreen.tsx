@@ -8,12 +8,16 @@ import {
   loadCachedManifest,
   saveCachedFile,
   saveCachedManifest,
+  removeCachedFile,
 } from '../../storage/cacheStore';
 import { restoreWindowScroll, saveWindowScroll } from '../../app/scrollMemory';
 import { sortEntries } from './sortEntries';
 import { Icon } from '../../ui/Icon';
 import { ActionSheet, IconButton, MenuItem } from '../../ui/Controls';
 import { ProjectCacheButton } from './ProjectCacheButton';
+import { cacheJobs } from './cacheJobs';
+import { relocateFileDrafts } from '../../storage/draftStore';
+import { relocateReading } from '../../storage/readingStore';
 
 /** 文件夹展开状态按项目记忆：从文件返回目录时保持上次展开的样子。
  *  语义：记录“已展开”的目录；不在集合中 = 收起（默认全部收起，用户要求）。 */
@@ -35,6 +39,7 @@ interface Props {
   onOpenGit: () => void;
   /** 打开多文件分享页（S4f）。 */
   onOpenShare: () => void;
+  onOpenCache?: () => void;
 }
 
 /** 文件名过滤：保留名字命中的文件；目录其子树内有命中则保留。 */
@@ -74,6 +79,7 @@ export function ExplorerScreen({
   onOpenSearch,
   onOpenGit,
   onOpenShare,
+  onOpenCache,
 }: Props) {
   const [rootChildren, setRootChildren] = useState<ManifestNode[] | null>(null);
   const [fromCache, setFromCache] = useState(false);
@@ -89,6 +95,7 @@ export function ExplorerScreen({
   const [nameFilter, setNameFilter] = useState('');
   const [toolsOpen, setToolsOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
+  const [entryTools, setEntryTools] = useState<ManifestNode | null>(null);
   const scrollRestored = useRef(false);
   const scrollKey = `explorer:${project.id}`;
 
@@ -240,6 +247,33 @@ export function ExplorerScreen({
     });
   };
 
+  const moveEntry = async (node: ManifestNode & { type: 'file' }, renameOnly: boolean) => {
+    if (!client || !online || revoked || mutationBusy) return;
+    const name = window.prompt(renameOnly ? '新文件名（只修改名称，不会更新代码引用）' : '目标文件路径（相对项目根目录，目标文件夹需已存在；不会更新代码引用）', renameOnly ? node.name : node.path);
+    if (name === null || !name.trim()) return;
+    const trimmed = name.trim();
+    if (renameOnly && /[/\\]/.test(trimmed)) { setNotice({ kind: 'bad', text: '重命名请输入文件名；更换文件夹请使用移动。' }); return; }
+    const parent = node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/') + 1) : '';
+    const target = renameOnly ? parent + trimmed : trimmed;
+    if (target === node.path) return;
+    setMutationBusy(true); setNotice(null);
+    try {
+      await cacheJobs.stop(project.id);
+      await client.moveFile(project.id, { path: node.path, target_path: target, base_version: node.version });
+      const local = await Promise.allSettled([
+        relocateFileDrafts(project.id, node.path, target),
+        relocateReading(project.id, node.path, target),
+        removeCachedFile(project.id, node.path),
+      ]);
+      const failures = local.filter((result) => result.status === 'rejected').length;
+      const newParent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : null;
+      if (newParent) expandDir(newParent);
+      setNotice({ kind: failures ? 'bad' : 'ok', text: `电脑文件已移动到 ${target}。${failures ? '部分本地记录未能迁移，旧位置的草稿或旁注保留，请检查。' : '草稿、书签和阅读记录已跟随新路径。'}代码引用需自行调整。` });
+      await refreshManifest();
+    } catch (cause) { setNotice({ kind: 'bad', text: cause instanceof Error ? cause.message : '移动失败，未覆盖目标文件' }); }
+    finally { setMutationBusy(false); }
+  };
+
   const openFile = async (node: ManifestNode & { type: 'file' }) => {
     if (!client) return;
     if (revoked) {
@@ -313,11 +347,11 @@ export function ExplorerScreen({
           <button
             type="button"
             className="filelist__delete"
-            aria-label={`删除 ${node.name}`}
-            onClick={() => void trashEntry(node)}
+            aria-label={`操作 ${node.name}`}
+            onClick={() => setEntryTools(node)}
             disabled={!mutationsEnabled}
           >
-            <Icon name="trash" size={16} />
+            <Icon name="more" size={16} />
           </button>
         </div>
       );
@@ -357,7 +391,7 @@ export function ExplorerScreen({
       <IconButton icon="plus" label="新建" onClick={() => setNewOpen(true)} disabled={!mutationsEnabled} />
       </div>
       <div className="breadcrumb"><Icon name="folder" size={14} /><span>{project.name} / 根目录</span></div>
-      <ProjectCacheButton key={project.id} client={client} projectId={project.id} online={online} revoked={revoked} />
+      <ProjectCacheButton key={project.id} client={client} projectId={project.id} online={online && !mutationBusy} revoked={revoked} onManage={onOpenCache} />
       {notice ? (
         <div className={`result ${notice.kind === 'ok' ? 'result--ok' : 'result--bad'}`}>
           <p className="result__title">
@@ -389,6 +423,7 @@ export function ExplorerScreen({
       </ul>
       {toolsOpen && <ActionSheet title="文件操作" onClose={() => setToolsOpen(false)}><MenuItem icon="search" onClick={() => { setToolsOpen(false); onOpenSearch(); }}>项目全文搜索</MenuItem><MenuItem icon="share" onClick={() => { setToolsOpen(false); onOpenShare(); }}>多文件分享</MenuItem><MenuItem icon="refresh" onClick={() => { setToolsOpen(false); void refreshManifest(); }} disabled={!online || revoked}>刷新目录</MenuItem></ActionSheet>}
       {newOpen && <ActionSheet title="新建" onClose={() => setNewOpen(false)}><MenuItem icon="file" onClick={() => { setNewOpen(false); void createEntry('file'); }}>新建文件</MenuItem><MenuItem icon="folder" onClick={() => { setNewOpen(false); void createEntry('dir'); }}>新建文件夹</MenuItem></ActionSheet>}
+      {entryTools && <ActionSheet title={entryTools.name} onClose={() => setEntryTools(null)}>{entryTools.type === 'file' && <><MenuItem icon="edit" disabled={!mutationsEnabled} onClick={() => { setEntryTools(null); void moveEntry(entryTools, true); }}>重命名文件</MenuItem><MenuItem icon="folder" disabled={!mutationsEnabled} onClick={() => { setEntryTools(null); void moveEntry(entryTools, false); }}>移动文件</MenuItem><p className="hint">只调整文件位置，代码中的引用需要自行修改。</p></>}<MenuItem icon="trash" danger disabled={!mutationsEnabled} onClick={() => { setEntryTools(null); void trashEntry(entryTools); }}>移入电脑回收区</MenuItem></ActionSheet>}
     </section>
   );
 }

@@ -5,7 +5,7 @@
  * - 片段 = 代码 + 文件路径 + 行号；单文件/多文件 = 保留相对路径的阅读文档；
  * - **来源必须明确标注**（电脑版 / 本地缓存 / 草稿），避免 AI 把缓存当最新；
  * - 分享前要展示清单/总大小，并给敏感文件名提示（.env/密钥/令牌类）；
- * - 临时 ZIP 不做（多文件默认文本包，可读性优先）；智能关联在 S5。
+ * - 多文件默认文本包，也可选保留相对路径的 ZIP；智能关联在 S5。
  */
 
 export type ShareSource = 'pc' | 'cache' | 'draft';
@@ -62,6 +62,7 @@ export interface BundleFile {
   source?: ShareSource;
   version?: string;
   reason?: string;
+  fetchedAt?: string;
 }
 
 export interface MultiFileBundle {

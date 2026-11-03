@@ -227,6 +227,28 @@ public class PocketCodeBridgePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void writeShareArchive(PluginCall call) {
+        String name = call.getString("name", "project.zip");
+        String data = call.getString("base64", "");
+        // 在解码前限制桥接输入，避免无界内存分配。
+        if (data.length() > ((ShareArchiveStore.MAX_BYTES + 2) / 3) * 4) {
+            call.reject("ZIP 超过分享大小上限", "ERR_SHARE_ARCHIVE");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                byte[] bytes = android.util.Base64.decode(data, android.util.Base64.NO_WRAP);
+                java.io.File file = new ShareArchiveStore(getContext().getCacheDir()).write(name, bytes);
+                JSObject result = new JSObject();
+                result.put("uri", android.net.Uri.fromFile(file).toString());
+                call.resolve(result);
+            } catch (Exception error) {
+                call.reject("ZIP 临时文件写入失败：" + error.getMessage(), "ERR_SHARE_ARCHIVE");
+            }
+        }).start();
+    }
+
+    @PluginMethod
     public void dataGet(PluginCall call) {
         try {
             JSObject result = new JSObject();

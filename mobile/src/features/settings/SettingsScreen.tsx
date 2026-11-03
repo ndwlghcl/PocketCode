@@ -10,7 +10,7 @@ function Slider({ label, value, onChange, min = 0, max = 100, suffix = '%' }: { 
   const id = useId();
   return <div className="settings-slider"><div><label htmlFor={id}>{label}</label><output htmlFor={id}>{Math.round(value)}{suffix}</output></div><input id={id} type="range" min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} /></div>;
 }
-export function SettingsScreen({ connectionText, onOpenConnection }: { connectionText: string; onOpenConnection: () => void }) {
+export function SettingsScreen({ connectionText, onOpenConnection, onOpenCache }: { connectionText: string; onOpenConnection: () => void; onOpenCache?: () => void }) {
   const { prefs, update, image, chooseImage, clearImage, storageError } = useAppearance();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +30,6 @@ export function SettingsScreen({ connectionText, onOpenConnection }: { connectio
       <button className="settings-reset" type="button" disabled={busy} onClick={() => void run(async () => { await clearImage(); update({ imageOpacity: .55, maskOpacity: .7, blur: 0 }); })}>恢复默认背景</button>
     </div><p className="settings-footnote">背景只保存在这台设备。文字和代码使用独立的阅读底色。</p>
     <h2 className="settings-label">代码显示</h2><div className="settings-group"><Slider label="字体大小" value={prefs.fontSize} min={11} max={24} suffix=" px" onChange={(n) => update({ fontSize: n })} /><pre className="font-preview"><span className="tok-keyword">def</span> <span className="tok-def">make_something</span>():{'\n'}    <span className="tok-keyword">return</span> <span className="tok-string">"a little better"</span></pre><div className="setting-row"><span>自动折行</span><Toggle checked={prefs.wrap} label="自动折行" onChange={(wrap) => update({ wrap })} /></div><div className="setting-row"><span>显示行号</span><Toggle checked={prefs.lineNumbers} label="显示行号" onChange={(lineNumbers) => update({ lineNumbers })} /></div></div>
-    <h2 className="settings-label">应用</h2><div className="settings-group"><button type="button" className="setting-row setting-link" onClick={onOpenConnection}><span><Icon name="system" size={18} />连接管理</span><Icon name="chevron" size={18} /></button><p className="settings-connection">{connectionText}</p><div className="settings-version"><span>PocketCode · {version.version} · 构建号 {version.build}</span><small>{APP_BUILD}</small></div></div><p className="settings-signature">YOUR CODE. YOUR CORNER.</p>
+    <h2 className="settings-label">应用</h2><div className="settings-group">{onOpenCache && <button type="button" className="setting-row setting-link" onClick={onOpenCache}><span><Icon name="download" size={18} />离线缓存管理</span><Icon name="chevron" size={18} /></button>}<button type="button" className="setting-row setting-link" onClick={onOpenConnection}><span><Icon name="system" size={18} />连接管理</span><Icon name="chevron" size={18} /></button><p className="settings-connection">{connectionText}</p><div className="settings-version"><span>PocketCode · {version.version} · 构建号 {version.build}</span><small>{APP_BUILD}</small></div></div><p className="settings-signature">YOUR CODE. YOUR CORNER.</p>
   </section>;
 }

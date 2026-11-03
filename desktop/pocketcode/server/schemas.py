@@ -135,6 +135,19 @@ class FileCreateResponse(BaseModel):
     manifest_revision: int
 
 
+class FileMoveRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=512)
+    target_path: str = Field(min_length=1, max_length=512)
+    base_version: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class FileMoveResponse(BaseModel):
+    path: str
+    target_path: str
+    version: str
+    manifest_revision: int
+
+
 class TrashRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=100)
 

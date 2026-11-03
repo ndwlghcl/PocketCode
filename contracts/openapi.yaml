@@ -298,6 +298,59 @@ paths:
         "409":
           $ref: '#/components/responses/AlreadyExists'
 
+  /v1/projects/{project_id}/files/move:
+    post:
+      operationId: moveFile
+      summary: 重命名或移动项目内文件
+      description: |
+        仅移动普通文件，目标父目录必须已存在；不修改正文或代码引用。
+        校验来源版本，并以文件系统原子操作拒绝覆盖任何已有目标。
+        来源、目标及路径分隔段不允许符号链接或重解析点，以及 Windows 非法
+        文件名字符或数据流名称（冒号、星号、问号、引号、尖括号、竖线）。来源限 4 MiB。
+        版本校验是乐观检查，不能阻止其他程序在检查后修改来源。
+      tags: [files]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileMoveRequest'
+      responses:
+        "200":
+          description: 文件已移动，正文与版本不变
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileMoveResponse'
+        "400":
+          $ref: '#/components/responses/PathInvalid'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/PathForbidden'
+        "404":
+          description: 来源文件、目标父目录或授权项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: 目标已存在或来源版本改变
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          $ref: '#/components/responses/FileTooLarge'
+        "500":
+          description: 文件系统不支持安全移动或 I/O 失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v1/projects/{project_id}/search:
     get:
       operationId: searchProject
@@ -987,6 +1040,33 @@ components:
           type: integer
           minimum: 0
           description: 创建后的新目录快照序号。
+
+    FileMoveRequest:
+      type: object
+      additionalProperties: false
+      required: [path, target_path, base_version]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        target_path:
+          $ref: '#/components/schemas/RelativePath'
+        base_version:
+          $ref: '#/components/schemas/Sha256Version'
+
+    FileMoveResponse:
+      type: object
+      additionalProperties: false
+      required: [path, target_path, version, manifest_revision]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativePath'
+        target_path:
+          $ref: '#/components/schemas/RelativePath'
+        version:
+          $ref: '#/components/schemas/Sha256Version'
+        manifest_revision:
+          type: integer
+          minimum: 0
 
     TrashRequest:
       type: object

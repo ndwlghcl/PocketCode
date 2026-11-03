@@ -181,6 +181,44 @@ def test_create_existing_409(env):
     assert resp.json()["error"]["code"] == "ALREADY_EXISTS"
 
 
+def test_create_never_overwrites_file_created_by_external_program(env, monkeypatch):
+    import os
+    publish = os.link
+    target = env.project_dir / "new.py"
+
+    def external_create_then_publish(source, destination):
+        target.write_bytes(b"EXTERNAL IDE CONTENT")
+        return publish(source, destination)
+
+    monkeypatch.setattr(os, "link", external_create_then_publish)
+    response = env.post(f"/v1/projects/{env.project_id}/files",
+                        json={"path": "new.py", "type": "file", "content": "PHONE"})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "ALREADY_EXISTS"
+    assert target.read_bytes() == b"EXTERNAL IDE CONTENT"
+    assert list(env.project_dir.glob(".pocketcode-tmp-*")) == []
+
+
+def test_concurrent_service_creates_have_one_winner(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from pocketcode.services.writes import create_entry, WriteServiceError
+
+    def create(number):
+        try:
+            create_entry(tmp_path, "same.py", "file", content=str(number))
+            return number
+        except WriteServiceError as error:
+            assert error.code == "ALREADY_EXISTS"
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(create, range(8)))
+    winners = [number for number in results if number is not None]
+    assert len(winners) == 1
+    assert (tmp_path / "same.py").read_text() == str(winners[0])
+    assert list(tmp_path.glob(".pocketcode-tmp-*")) == []
+
+
 # ------------------------------------------------------------------ 回收区
 def _trash(env, *paths: str):
     return env.post(f"/v1/projects/{env.project_id}/trash", json={"paths": list(paths)})
@@ -253,6 +291,77 @@ def test_write_endpoints_require_auth(env):
               "content": "x", "encoding": "utf-8", "newline": "LF"},
     )
     assert resp.status_code == 401
+
+
+def _move(client, target="renamed.py", path="sample.py", version=None):
+    return client.post(f"/v1/projects/{client.project_id}/files/move", json={
+        "path": path, "target_path": target, "base_version": version or client.current_version,
+    })
+
+
+def test_move_file_preserves_bytes_and_rejects_conflicts(env):
+    folder = env.project_dir / "folder"
+    folder.mkdir()
+    before = (env.project_dir / "sample.py").read_bytes()
+    response = _move(env, "folder/中文.py")
+    assert response.status_code == 200
+    assert response.json()["target_path"] == "folder/中文.py"
+    assert response.json()["version"] == env.current_version
+    assert not (env.project_dir / "sample.py").exists()
+    assert (folder / "中文.py").read_bytes() == before
+    (env.project_dir / "occupied.py").write_bytes(b"keep")
+    response = _move(env, "occupied.py", "folder/中文.py")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "ALREADY_EXISTS"
+    assert (env.project_dir / "occupied.py").read_bytes() == b"keep"
+    assert (folder / "中文.py").read_bytes() == before
+
+
+def test_move_checks_source_version_paths_and_auth(env):
+    assert _move(env, version="sha256:" + "0" * 64).json()["error"]["code"] == "VERSION_CONFLICT"
+    assert _move(env, "../escape.py").status_code == 400
+    assert _move(env, "sample.py:stream").status_code == 400
+    assert _move(env, "missing/name.py").status_code == 404
+    assert _move(env, path="missing.py").status_code == 404
+    anonymous = TestClient(env.app)
+    assert anonymous.post(f"/v1/projects/{env.project_id}/files/move", json={"path": "sample.py", "target_path": "b.py", "base_version": env.current_version}).status_code == 401
+    assert (env.project_dir / "sample.py").exists()
+    env.app.state.store.remove_authorized_project(env.project_id)
+    assert _move(env).json()["error"]["code"] == "PROJECT_NOT_FOUND"
+
+
+def test_move_external_target_creation_is_not_overwritten(env, monkeypatch):
+    from pocketcode.services import writes
+    original = writes._rename_exclusive
+
+    def race(source, target):
+        target.write_bytes(b"external IDE")
+        return original(source, target)
+
+    monkeypatch.setattr(writes, "_rename_exclusive", race)
+    response = _move(env)
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "ALREADY_EXISTS"
+    assert (env.project_dir / "renamed.py").read_bytes() == b"external IDE"
+    assert (env.project_dir / "sample.py").read_bytes() == b"print('v1')\n"
+
+
+def test_move_rejects_directory_and_oversized_source(env):
+    (env.project_dir / "dir").mkdir()
+    assert _move(env, "elsewhere", "dir").status_code == 404
+    (env.project_dir / "big.bin").write_bytes(b"x" * (4 * 1024 * 1024 + 1))
+    assert _move(env, "other.bin", "big.bin").status_code == 413
+
+
+def test_move_rejects_symbolic_links_even_inside_project(env):
+    linked = env.project_dir / "linked.py"
+    try:
+        linked.symlink_to(env.project_dir / "sample.py")
+    except OSError:
+        pytest.skip("Windows symlink privilege unavailable")
+    assert _move(env, "new.py", "linked.py").status_code == 403
+    assert _move(env, "linked.py").status_code == 403
+    assert (env.project_dir / "sample.py").exists()
 
 
 def test_restore_rechecks_project_authorization(env):
