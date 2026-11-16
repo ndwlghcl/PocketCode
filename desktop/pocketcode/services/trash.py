@@ -11,14 +11,17 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 import shutil
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from pocketcode.security.path_guard import resolve_under_root
 from pocketcode.services.files import project_root_or_404
+from pocketcode.services.file_moves import rename_exclusive
 
 # 路由可创建多个仓储对象，但同一回收区的读—改—写必须共用锁。
 _LOCKS: dict[str, threading.RLock] = {}
@@ -136,7 +139,16 @@ class TrashStore:
                     },
                 )
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(payload), str(target))
+            try:
+                _restore_exclusive(payload, target)
+            except FileExistsError as exc:
+                raise TrashServiceError(
+                    "ALREADY_EXISTS", "原路径已被占用，未执行恢复",
+                    {"occupied_path": entry["original_path"],
+                     "suggested_path": _suggest_alternative(target)},
+                ) from exc
+            except OSError as exc:
+                raise TrashServiceError("IO_ERROR", "恢复失败，请检查文件占用、权限或文件系统支持") from exc
             self._save_index([e for e in entries if e["trash_id"] != trash_id])
             return trash_id, entry["original_path"]
 
@@ -165,6 +177,29 @@ class TrashStore:
                     payload.unlink(missing_ok=True)
             self._save_index([])
             return len(entries)
+
+
+def _restore_exclusive(payload: Path, target: Path) -> None:
+    try:
+        rename_exclusive(payload, target)
+        return
+    except OSError as exc:
+        # 回收区通常在 C:，授权项目可能在 D:；不能用 shutil.move 的覆盖式回退。
+        if exc.errno != errno.EXDEV and getattr(exc, "winerror", None) != 17:
+            raise
+
+    # 先在目标盘准备完整副本，再原子发布；发布失败时回收区原件保持完整。
+    with tempfile.TemporaryDirectory(prefix=".pocketcode-restore-", dir=target.parent) as staging:
+        staged = Path(staging) / "payload"
+        if payload.is_dir():
+            shutil.copytree(payload, staged, symlinks=True)
+        else:
+            shutil.copy2(payload, staged, follow_symlinks=False)
+        rename_exclusive(staged, target)
+    if payload.is_dir():
+        shutil.rmtree(payload)
+    else:
+        payload.unlink()
 
 
 def _suggest_alternative(occupied: Path) -> str:

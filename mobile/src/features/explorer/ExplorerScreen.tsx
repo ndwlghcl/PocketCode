@@ -302,8 +302,8 @@ export function ExplorerScreen({
       onOpenFile(data);
     } catch (cause) {
       setFileLoading(null);
-      if (cached) {
-        // 在线但读取失败（电脑休眠等）：回退缓存并明确标注
+      if (cached && cause instanceof PocketCodeError && cause.code === 'OFFLINE' && cause.details?.kind !== 'tls') {
+        // 仅网络故障可回退缓存；鉴权、路径和证书错误必须明确报告。
         onOpenFile(cached.data, { fromCache: true, cachedAt: cached.fetchedAt });
       } else {
         setFileError(cause instanceof PocketCodeError ? cause.message : '读取文件失败');

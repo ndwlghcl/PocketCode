@@ -23,11 +23,11 @@ interface PocketCodeBridgePlugin {
   writeShareArchive(options: { name: string; base64: string }): Promise<{ uri: string }>;
   request(options: BridgeRequestOptions): Promise<{ status: number; body: string }>;
   secureSet(options: { key: string; value: string }): Promise<void>;
-  secureGet(options: { key: string }): Promise<{ value: string | null }>;
+  secureGet(options: { key: string }): Promise<{ value?: string | null }>;
   secureRemove(options: { key: string }): Promise<void>;
   openAppSettings(): Promise<void>;
   dataSet(options: { key: string; value: string }): Promise<void>;
-  dataGet(options: { key: string }): Promise<{ value: string | null }>;
+  dataGet(options: { key: string }): Promise<{ value?: string | null }>;
   dataDelete(options: { key: string }): Promise<void>;
   dataKeys(options: { prefix: string }): Promise<{ keys: string[] }>;
 }
@@ -54,7 +54,7 @@ export const secureStorage = {
   async get(key: string): Promise<string | null> {
     if (Capacitor.isNativePlatform()) {
       const result = await PocketCodeBridge.secureGet({ key: `${SECURE_KEY}.${key}` });
-      return result.value;
+      return result.value ?? null;
     }
     try {
       return localStorage.getItem(`${SECURE_KEY}.${key}`);
@@ -127,7 +127,9 @@ export const diskStorage: KVStorage = {
   async get(key: string): Promise<string | null> {
     if (Capacitor.isNativePlatform()) {
       const result = await PocketCodeBridge.dataGet({ key });
-      return result.value;
+      // 兼容旧原生桥：JSONObject.put(key, null) 会省略字段。
+      // 仅把缺失值归一为空；空字符串等损坏数据仍交给草稿层报错。
+      return result.value ?? null;
     }
     return localStorage.getItem(key);
   },

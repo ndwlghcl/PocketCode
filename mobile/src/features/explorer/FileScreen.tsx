@@ -406,7 +406,7 @@ export function FileScreen({
           setEditState('synced');
           const confirmedRevision = editRevisionRef.current;
           savedModeTimer.current = setTimeout(() => {
-            if (editRevisionRef.current !== confirmedRevision || savingRef.current) return;
+            if (editRevisionRef.current !== confirmedRevision || savingRef.current || activeDraftIdRef.current !== submittedId) return;
             setMode('read');
             setEditState('clean');
           }, 900);
@@ -530,6 +530,7 @@ export function FileScreen({
     cancelPendingAutosave();
     const target = draftsRef.current.find((draft) => draft.id === id);
     if (!target) return;
+    cancelSavedModeTimer();
     setSwitchBusy(true);
     try {
       // 1) 先把当前编辑内容落盘到“离开”的草稿
@@ -560,6 +561,7 @@ export function FileScreen({
     const name = window.prompt('草稿名称（如：异常处理实验 A）', `草稿 ${drafts.length + 1}`);
     if (name === null) return;
     cancelPendingAutosave();
+    cancelSavedModeTimer();
     setSwitchBusy(true);
     try {
       // 当前内容先落盘到“离开”的草稿，再以其内容派生新草稿
@@ -596,6 +598,7 @@ export function FileScreen({
     if (!id || switchBusy || savingRef.current) return;
     if (!window.confirm('删除当前草稿？其未保存的修改将丢失。')) return;
     cancelPendingAutosave();
+    cancelSavedModeTimer();
     setSwitchBusy(true);
     try {
       const stored = await enqueue(() => removeDraft(projectId, initialData.path, id));
@@ -721,7 +724,7 @@ export function FileScreen({
     setDrawer({ type: 'symbol', symbol, line, results: null, message: null });
   }, []);
 
-  // ---- 分享（S4f「给哥哥看」）：来源如实标注（PRD §8.1） ----
+  // ---- 代码分享（S4f）：来源如实标注（PRD §8.1） ----
   const currentSource: ShareSource = cacheSource ? 'cache' : 'pc';
 
   const shareSnippet = useCallback(

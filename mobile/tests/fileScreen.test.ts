@@ -196,6 +196,29 @@ test('typing after a successful save cancels the automatic return to read mode',
   expect((await loadDrafts('p', 'a.py')).drafts[0].content).toBe('B');
 });
 
+test.each(['switch', 'create', 'delete'])('保存后立即操作草稿（%s），旧定时器不得覆盖新活动草稿的编辑状态', async (action) => {
+  await upsertDraft('p', 'a.py', { id: 'other', name: 'other', path: 'a.py', projectId: 'p', content: 'OTHER IDEA', baseVersion: data.version, savedAt: data.mtime });
+  await upsertDraft('p', 'a.py', { id: 'active', name: 'active', path: 'a.py', projectId: 'p', content: 'ACTIVE IDEA', baseVersion: data.version, savedAt: data.mtime });
+  props.client.saveFile = vi.fn(async () => ({ version: 'sha256:' + '2'.repeat(64), size: 11, mtime: data.mtime }));
+  render(); await drain(); await edit();
+  button('保存').onClick(); await drain();
+  if (action === 'switch') {
+    nodes(tree).find((node) => node.type === 'select').props.onChange({ target: { value: 'other' } });
+  } else {
+    (window as any).prompt = vi.fn(() => 'new draft');
+    button('更多操作').onClick(); await drain();
+    button(action === 'create' ? '新建命名草稿' : '删除当前草稿').onClick();
+  }
+  await drain();
+  const expected = action === 'create' ? 'ACTIVE IDEA' : 'OTHER IDEA';
+  expect(editor().doc).toBe(expected);
+  await vi.advanceTimersByTimeAsync(1000); await drain();
+  expect(editor().readOnly).toBe(false);
+  expect(editor().doc).toBe(expected);
+  expect((await loadDrafts('p', 'a.py')).drafts.find((draft) => draft.id === nodes(tree).find((node) => node.type === 'select').props.value)?.content).toBe(expected);
+  if (action !== 'create') expect(button('保存').disabled).toBe(false);
+});
+
 test('failed autosave is visible and cannot silently close the edited buffer', async () => {
   render(); await drain(); await edit();
   h.failWrites = true;

@@ -12,6 +12,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -251,8 +253,9 @@ public class PocketCodeBridgePlugin extends Plugin {
     @PluginMethod
     public void dataGet(PluginCall call) {
         try {
+            String value = dataStore().get(call.getString("key", ""));
             JSObject result = new JSObject();
-            result.put("value", dataStore().get(call.getString("key", "")));
+            result.put("value", value == null ? JSONObject.NULL : value);
             call.resolve(result);
         } catch (Exception e) {
             call.reject("数据读取失败: " + e.getMessage(), "ERR_DATA");
@@ -335,7 +338,7 @@ public class PocketCodeBridgePlugin extends Plugin {
         try {
             String value = securePrefs().getString(call.getString("key", ""), null);
             JSObject result = new JSObject();
-            result.put("value", value);
+            result.put("value", value == null ? JSONObject.NULL : value);
             call.resolve(result);
         } catch (Exception e) {
             call.reject("安全存储读取失败: " + e.getMessage(), "ERR_SECURE_STORAGE");

@@ -1,4 +1,4 @@
-/** 占位组件：S4 实现「给哥哥看」五种分享模式（PRD §8）。 */
+/** 占位组件：S4 实现五种代码分享模式（PRD §8）。 */
 export function SharingPlaceholder() {
   return (
     <section>

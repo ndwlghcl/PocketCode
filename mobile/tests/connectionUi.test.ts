@@ -143,6 +143,36 @@ test('定时探测返回相同配对值时复用 client，凭据变化时才更�
   render(); expect(pageClient()).not.toBe(first);
 });
 
+test.each([
+  { cause: new PocketCodeError(401, 'UNAUTHORIZED', '授权失效'), fallback: false },
+  { cause: new PocketCodeError(403, 'PATH_FORBIDDEN', '路径禁止'), fallback: false },
+  { cause: new PocketCodeError(404, 'FILE_NOT_FOUND', '文件已删除'), fallback: false },
+  { cause: new PocketCodeError(500, 'IO_ERROR', '电脑读取失败'), fallback: false },
+  { cause: new PocketCodeError(0, 'OFFLINE', '证书不匹配', undefined, { kind: 'tls' }), fallback: false },
+  { cause: new Error('unexpected error'), fallback: false },
+  { cause: new PocketCodeError(0, 'OFFLINE', '网络不可达', undefined, { kind: 'network' }), fallback: true },
+  { cause: new PocketCodeError(0, 'OFFLINE', '请求超时', undefined, { kind: 'timeout' }), fallback: true },
+])('目录读取失败只允许网络错误回退缓存：$cause.message', async ({ cause, fallback }) => {
+  const onOpenFile = vi.fn();
+  const cached = { data: { path: 'a.py', content: 'cached code' }, fetchedAt: '2026-11-15T00:00:00Z' };
+  h.loadManifest.mockResolvedValue({ root: { children: [
+    { type: 'file', name: 'a.py', path: 'a.py', version: 'sha256:x', size: 3, read_only: false },
+  ] } });
+  h.loadFile.mockResolvedValue(cached);
+  client.readFile = vi.fn().mockRejectedValue(cause);
+  component = () => ExplorerScreen({ client, project, online: true, revoked: false,
+    onBack() {}, onOpenFile, onOpenSearch() {}, onOpenGit() {}, onOpenShare() {} });
+  render(); await drain();
+  const row = nodes(tree).find((node) => node.type === 'button' && node.props.title === 'a.py');
+  await row.props.onClick(); await drain();
+  if (fallback) {
+    expect(onOpenFile).toHaveBeenCalledWith(cached.data, { fromCache: true, cachedAt: cached.fetchedAt });
+  } else {
+    expect(onOpenFile).not.toHaveBeenCalled();
+    expect(text(tree)).toContain(cause instanceof PocketCodeError ? cause.message : '读取文件失败');
+  }
+});
+
 test.each(['projects', 'explorer'])('%s 在线后台读缓存时不显示离线提示，断线仍提示', async (page) => {
   let online = true;
   component = () => page === 'projects'

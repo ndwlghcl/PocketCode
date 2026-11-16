@@ -25,6 +25,7 @@ from pocketcode.services.files import (
     _iso_time,
 )
 from pocketcode.services.snapshots import snapshot_previous
+from pocketcode.services.file_moves import rename_exclusive as _rename_exclusive
 
 
 class WriteServiceError(Exception):
@@ -192,31 +193,6 @@ def hashlib_sha256(data: bytes) -> str:
     import hashlib
 
     return hashlib.sha256(data).hexdigest()
-
-
-def _rename_exclusive(source: Path, target: Path) -> None:
-    """原子移动且不覆盖；不支持的平台宁可失败，也不回退到 replace。"""
-    if os.name == "nt":
-        # Windows rename 的目标已存在时会失败，包含外部程序的竞态。
-        os.rename(source, target)
-        return
-    import ctypes
-    import errno
-    import sys
-
-    if sys.platform != "linux":
-        raise WriteServiceError("IO_ERROR", "当前系统不支持安全的不覆盖移动")
-    libc = ctypes.CDLL(None, use_errno=True)
-    rename = getattr(libc, "renameat2", None)
-    if rename is None:
-        raise WriteServiceError("IO_ERROR", "当前文件系统不支持安全的不覆盖移动")
-    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    rename.restype = ctypes.c_int
-    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1) != 0:
-        code = ctypes.get_errno()
-        if code == errno.EEXIST:
-            raise FileExistsError(code, os.strerror(code), str(target))
-        raise OSError(code, os.strerror(code))
 
 
 def _unlinked_path(root: Path, relative_path: str) -> Path:
